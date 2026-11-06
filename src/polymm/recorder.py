@@ -46,6 +46,7 @@ class Recorder:
         self._flush_lock = asyncio.Lock()
         self.started_at = time.time()
         self.last_write_latency_ms = 0.0
+        self.last_convert_ms = 0.0
         self.queue_max_seen = 0
 
     # ---- lifecycle ---------------------------------------------------------------
@@ -122,17 +123,24 @@ class Recorder:
             if not batches and not lines:
                 return
             t0 = time.perf_counter()
-
-            def _do():
+            # 1) convert on the loop in slices, yielding between them (GIL-bound work)
+            tables: dict[str, list] = {}
+            first_ts = {t: int(rows[0][0]) for t, rows in batches.items()}
+            for table, rows in batches.items():
+                for part in self.parquet.convert_chunks(table, rows):
+                    tables.setdefault(table, []).append(part)
+                    await asyncio.sleep(0)
+            t1 = time.perf_counter()
+            # 2) compress + write in a thread (releases the GIL)
+            def _io():
                 self.raw.write(lines)
-                self.parquet.write(batches)
+                self.parquet.write_tables(tables, first_ts)
                 if final:
                     self.raw.close()
 
-            await asyncio.to_thread(_do)
+            await asyncio.to_thread(_io)
             self.last_write_latency_ms = (time.perf_counter() - t0) * 1000
-            if self.parquet.pending_rows() >= self.cfg.recorder.flush_max_rows:
-                log.warning("buffers refilled to %d rows during flush", self.parquet.pending_rows())
+            self.last_convert_ms = (t1 - t0) * 1000
 
     async def _universe_tick(self) -> None:
         added, removed, refreshed = await self.universe.refresh()

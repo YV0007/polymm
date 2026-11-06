@@ -114,31 +114,40 @@ class ParquetSink:
             self.buffers[t] = []
         return out
 
-    # ---- runs in worker thread ---------------------------------------------------
+    # ---- conversion (on the event loop, in slices) ----------------------------------
 
-    def write(self, batches: dict[str, list[tuple]]) -> int:
-        total = 0
-        for table, rows in batches.items():
-            total += self._write_table(table, rows)
-        return total
+    CHUNK = 15_000
 
-    def _write_table(self, table: str, rows: list[tuple]) -> int:
+    def convert_chunks(self, table: str, rows: list[tuple]):
+        """Yield Arrow tables of <= CHUNK rows. Why slices: pa.array() from Python
+        objects holds the GIL for the whole call, so converting 100k+ rows in one
+        go (even in a thread) freezes the event loop for seconds and starves the
+        WS reader -> "slow consumer" disconnects. The recorder awaits between slices."""
         schema = TABLES[table]
-        # Why column-wise construction: pyarrow builds arrays from columns; zip(*rows)
-        # transposes 200k tuples in a few ms, far cheaper than pandas in between.
-        cols = list(zip(*rows))
-        arrays = [pa.array(c, type=f.type) for c, f in zip(cols, schema)]
-        tbl = pa.Table.from_arrays(arrays, schema=schema)
-        dt, hour = _dt_hour(int(rows[0][0]))
-        d = self.data_dir / LAYER[table] / table / f"dt={dt}" / f"hour={hour}"
-        d.mkdir(parents=True, exist_ok=True)
-        self._seq += 1
-        stamp = datetime.now(timezone.utc).strftime("%H%M%S")
-        final = d / f"part-{stamp}-{self._seq:05d}.parquet"
-        tmp = final.with_suffix(".parquet.tmp")
-        pq.write_table(tbl, tmp, compression=self.compression)
-        os.replace(tmp, final)
-        n = tmp.stat().st_size if tmp.exists() else final.stat().st_size
-        self.bytes_written += n
-        self.rows_written[table] += len(rows)
-        return n
+        for i in range(0, len(rows), self.CHUNK):
+            part = rows[i : i + self.CHUNK]
+            cols = list(zip(*part))
+            yield pa.Table.from_arrays([pa.array(c, type=f.type) for c, f in zip(cols, schema)], schema=schema)
+
+    # ---- runs in worker thread (I/O only) --------------------------------------------
+
+    def write_tables(self, tables: dict[str, list[pa.Table]], first_ts: dict[str, int]) -> int:
+        total = 0
+        for table, parts in tables.items():
+            if not parts:
+                continue
+            tbl = pa.concat_tables(parts)
+            dt, hour = _dt_hour(first_ts[table])
+            d = self.data_dir / LAYER[table] / table / f"dt={dt}" / f"hour={hour}"
+            d.mkdir(parents=True, exist_ok=True)
+            self._seq += 1
+            stamp = datetime.now(timezone.utc).strftime("%H%M%S")
+            final = d / f"part-{stamp}-{self._seq:05d}.parquet"
+            tmp = final.with_suffix(".parquet.tmp")
+            pq.write_table(tbl, tmp, compression=self.compression)
+            n = tmp.stat().st_size
+            os.replace(tmp, final)
+            self.bytes_written += n
+            self.rows_written[table] += tbl.num_rows
+            total += n
+        return total
