@@ -1,0 +1,24 @@
+[project]
+name = "polymm"
+version = "0.1.0"
+description = "Polymarket market-making research: data recorder and analysis"
+authors = [{ name = "YV0007", email = "egorvasylchenko02@gmail.com" }]
+requires-python = ">=3.12"
+dependencies = [
+    "websockets>=13",
+    "httpx>=0.27",
+    "pyarrow>=17",
+    "polars>=1.0",
+    "duckdb>=1.0",
+    "pydantic>=2.7",
+    "pyyaml>=6",
+    "zstandard>=0.22",
+    "orjson>=3.13.0",
+]
+
+[project.scripts]
+polymm = "polymm.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.10.12,<0.11.0"]
+build-backend = "uv_build"

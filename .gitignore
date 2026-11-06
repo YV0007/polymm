@@ -1,0 +1,16 @@
+# data lake: never in git
+data/
+logs/
+
+# python / uv
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# os / editors
+.DS_Store
+.idea/
+.vscode/

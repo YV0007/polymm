@@ -1,0 +1,43 @@
+# polymm recorder configuration
+# Why: config holds *rules* (market families), not token ids. Rolling markets
+# (BTC 15m) get new token ids every 15 minutes; UniverseWatcher resolves rules
+# to live tokens continuously and logs every change to the `markets` table.
+
+paths:
+  data_dir: data          # relative to the repo root unless absolute
+  log_dir: logs
+
+endpoints:
+  ws_market: wss://ws-subscriptions-clob.polymarket.com/ws/market
+  clob: https://clob.polymarket.com
+  gamma: https://gamma-api.polymarket.com
+  data_api: https://data-api.polymarket.com
+
+recorder:
+  queue_maxsize: 200000        # bounded: a stuck writer shows up as queue_depth, not OOM
+  flush_interval_s: 30         # parquet flush cadence (also flushes at max_rows)
+  flush_max_rows: 200000
+  raw_zstd_level: 12           # decision 4: measured 9.4x at ~50 MB/s; 19 gives 11.8x at 2 MB/s (too slow live; nightly recompress later)
+  raw_rotate_minutes: 60
+  ping_interval_s: 10          # Polymarket requires a PING text frame every ~10 s
+  rest_poll_interval_s: 60     # hash check against REST /books
+  rest_anchor_interval_s: 600  # write a snapshot_rest even when hashes match (replay anchor)
+  universe_refresh_s: 60
+  unsubscribe_grace_s: 600     # keep a market subscribed this long after its endDate
+  health_interval_s: 10
+  custom_feature_enabled: true # also receive best_bid_ask, new_market, market_resolved
+
+families:
+  - name: btc_15m
+    kind: updown
+    slug_prefix: btc-updown-15m
+    window_s: 900
+    lookahead_windows: 2       # current + next 2 windows are kept subscribed
+  - name: btc_daily_ladder
+    kind: daily_ladder
+    slug_prefix: bitcoin-above-on
+    timezone: America/New_York # the date in the slug is the ET date of the 12:00 ET resolution
+    lookahead_days: 2          # today + next 2 days
+  - name: fed_dec_2026
+    kind: fixed_event
+    event_slug: fed-decision-in-december-20260729232808632

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.polymm.recorder</string>
+  <!-- Why caffeinate -i: prevents idle sleep while the recorder runs; the lid
+       still sleeps the machine (laptop limitation -> VPS, decision 3). -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string><string>-i</string>
+    <string>/Users/macbook/.local/bin/uv</string><string>run</string><string>--project</string>
+    <string>/Users/macbook/Desktop/POLY MM</string>
+    <string>polymm</string><string>-c</string><string>/Users/macbook/Desktop/POLY MM/config.yaml</string><string>record</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/macbook/Desktop/POLY MM</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>          <!-- restart on crash or exit -->
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/Users/macbook/Desktop/POLY MM/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/macbook/Desktop/POLY MM/logs/launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/Users/macbook/.local/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+</dict>
+</plist>
