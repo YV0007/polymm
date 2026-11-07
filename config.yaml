@@ -21,7 +21,7 @@ recorder:
   raw_rotate_minutes: 60
   ping_interval_s: 10          # Polymarket requires a PING text frame every ~10 s
   rest_poll_interval_s: 60     # hash check against REST /books
-  rest_anchor_interval_s: 600  # write a snapshot_rest even when hashes match (replay anchor)
+  rest_anchor_interval_s: 300  # write a snapshot_rest even when hashes match (replay anchor); 600 cost ~7 % strict coverage (D-019)
   universe_refresh_s: 60
   unsubscribe_grace_s: 600     # keep a market subscribed this long after its endDate
   health_interval_s: 10
