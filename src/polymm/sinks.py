@@ -34,8 +34,8 @@ def _dt_hour(ts_ns: int) -> tuple[str, str]:
 class RawSink:
     """Lines: `<ts_recv_ns>\\t<conn_id>\\t<raw json>\\n`. Raw JSON never contains tabs/newlines."""
 
-    def __init__(self, data_dir: Path, level: int = 19, rotate_minutes: int = 60):
-        self.base = data_dir / "raw" / "ws_market"
+    def __init__(self, data_dir: Path, level: int = 19, rotate_minutes: int = 60, name: str = "ws_market"):
+        self.base = data_dir / "raw" / name
         self.level = level
         self.rotate_s = rotate_minutes * 60
         self._buf: list[bytes] = []

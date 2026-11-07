@@ -5,6 +5,7 @@
    flusher (every N s): take() both sinks ──► to_thread(write)
    UniverseWatcher (60 s) ──► WsSource.set_subscriptions, `markets` rows
    RestPoller (60 s)      ──► gap check, `snapshot_rest` rows
+   BinanceSource ──► spot_queue ──► spot_consumer ──► RawSink(binance) + SpotParser
    Health (10 s)          ──► `health` rows + log line
    SIGTERM/SIGINT         ──► stop source, drain queue, final flush, close
 """
@@ -22,6 +23,7 @@ from .poller import RestPoller
 from .rest import PolyRest
 from .sinks import ParquetSink, RawSink
 from .sources import WsSource
+from .spot import BinanceSource, SpotParser
 from .universe import UniverseWatcher
 
 log = logging.getLogger(__name__)
@@ -42,6 +44,16 @@ class Recorder:
         self.poller = RestPoller(
             self.rest, self.books, self.parser, self.universe.token_cond, rs.rest_poll_interval_s, rs.rest_anchor_interval_s
         )
+        # Binance spot feed. Why its own queue and raw sink: a Polymarket burst must
+        # not delay Binance receive stamps (and vice versa); the two feeds only share
+        # the ParquetSink buffers, the flusher and the clock, which is the point.
+        self.spot_queue: asyncio.Queue = asyncio.Queue(maxsize=rs.queue_maxsize)
+        self.spot_raw = RawSink(cfg.data_dir, level=rs.raw_zstd_level, rotate_minutes=rs.raw_rotate_minutes, name="binance")
+        self.spot_parser = SpotParser(self.parquet.buffers)
+        self.spot_source = (
+            BinanceSource(cfg.spot.ws, self.spot_queue, cfg.spot.symbols, cfg.spot.streams) if cfg.spot.enabled else None
+        )
+        self.spot_queue_max_seen = 0
         self._stop = asyncio.Event()
         self._flush_lock = asyncio.Lock()
         self.started_at = time.time()
@@ -60,28 +72,34 @@ class Recorder:
         # subscription list, and we want the `markets` rows to precede any event.
         await self._universe_tick()
 
-        tasks = [
-            asyncio.create_task(self.source.run(), name="source"),
-            asyncio.create_task(self._consumer(), name="consumer"),
-            asyncio.create_task(self._flusher(), name="flusher"),
-            asyncio.create_task(self.poller.run(), name="poller"),
-            asyncio.create_task(self._universe_loop(), name="universe"),
-            asyncio.create_task(self._health_loop(), name="health"),
-        ]
+        tasks = {
+            "source": asyncio.create_task(self.source.run(), name="source"),
+            "consumer": asyncio.create_task(self._consumer(), name="consumer"),
+            "flusher": asyncio.create_task(self._flusher(), name="flusher"),
+            "poller": asyncio.create_task(self.poller.run(), name="poller"),
+            "universe": asyncio.create_task(self._universe_loop(), name="universe"),
+            "health": asyncio.create_task(self._health_loop(), name="health"),
+        }
+        if self.spot_source is not None:
+            tasks["spot_source"] = asyncio.create_task(self.spot_source.run(), name="spot_source")
+            tasks["spot_consumer"] = asyncio.create_task(self._spot_consumer(), name="spot_consumer")
         await self._stop.wait()
-        log.info("stopping: draining queue (%d items)", self.queue.qsize())
+        log.info("stopping: draining queues (%d poly + %d spot items)", self.queue.qsize(), self.spot_queue.qsize())
         self.source.stop()
         self.poller.stop()
-        tasks[0].cancel()
-        tasks[3].cancel()
-        tasks[4].cancel()
-        tasks[5].cancel()
-        # let the consumer drain what is already queued, then stop it
-        while not self.queue.empty():
+        if self.spot_source is not None:
+            self.spot_source.stop()
+        # Why in two rounds: producers first, then let the consumers drain what is
+        # already queued, then the consumers and the flusher.
+        for k in ("source", "poller", "universe", "health", "spot_source"):
+            if k in tasks:
+                tasks[k].cancel()
+        while not (self.queue.empty() and self.spot_queue.empty()):
             await asyncio.sleep(0.05)
-        tasks[1].cancel()
-        tasks[2].cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        for k in ("consumer", "spot_consumer", "flusher"):
+            if k in tasks:
+                tasks[k].cancel()
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
         await self._flush(final=True)
         await self.rest.aclose()
         log.info("stopped cleanly")
@@ -110,6 +128,20 @@ class Recorder:
             if n % 20 == 0:
                 await asyncio.sleep(0)
 
+    async def _spot_consumer(self) -> None:
+        q = self.spot_queue
+        n = 0
+        while True:
+            ts, conn, raw = await q.get()
+            self.spot_raw.append(ts, conn, raw)
+            self.spot_parser.feed(ts, conn, raw)
+            d = q.qsize()
+            if d > self.spot_queue_max_seen:
+                self.spot_queue_max_seen = d
+            n += 1
+            if n % 20 == 0:
+                await asyncio.sleep(0)
+
     async def _flusher(self) -> None:
         rs = self.cfg.recorder
         while True:
@@ -120,7 +152,8 @@ class Recorder:
         async with self._flush_lock:
             batches = self.parquet.take()
             lines = self.raw.take()
-            if not batches and not lines:
+            spot_lines = self.spot_raw.take()
+            if not batches and not lines and not spot_lines:
                 return
             t0 = time.perf_counter()
             # 1) convert on the loop in slices, yielding between them (GIL-bound work)
@@ -134,9 +167,11 @@ class Recorder:
             # 2) compress + write in a thread (releases the GIL)
             def _io():
                 self.raw.write(lines)
+                self.spot_raw.write(spot_lines)
                 self.parquet.write_tables(tables, first_ts)
                 if final:
                     self.raw.close()
+                    self.spot_raw.close()
 
             await asyncio.to_thread(_io)
             self.last_write_latency_ms = (time.perf_counter() - t0) * 1000
@@ -171,6 +206,8 @@ class Recorder:
         while True:
             await asyncio.sleep(rs.health_interval_s)
             s = self.parser.stats
+            sp = self.spot_parser.stats
+            spot_reconn = self.spot_source.reconnects if self.spot_source is not None else 0
             tob_mm = sum(b.tob_mismatches for b in self.books.values())
             row = (
                 time.time_ns(), self.source.conn_id, time.time() - self.started_at, len(self.source.subscribed),
@@ -178,16 +215,19 @@ class Recorder:
                 s.parse_errors, self.source.reconnects, self.poller.gaps, tob_mm, self.poller.polls,
                 self.queue.qsize(), self.queue_max_seen, self.last_write_latency_ms,
                 self.raw.bytes_written, self.parquet.bytes_written, s.mirror_dropped, s.mirror_kept,
+                sp.msgs, spot_reconn,
             )
             self.parquet.buffers["health"].append(row)
             log.info(
                 "conn=%d sub=%d msgs=%d (book=%d delta=%d/%drows trade=%d tob=%d other=%d err=%d) "
-                "reconn=%d gaps=%d races=%d tobmm=%d polls=%d q=%d/%d wlat=%.0fms raw=%.1fMB pq=%.1fMB mirror=%d dropped/%d kept",
+                "reconn=%d gaps=%d races=%d tobmm=%d polls=%d q=%d/%d wlat=%.0fms raw=%.1fMB pq=%.1fMB mirror=%d dropped/%d kept "
+                "spot=%d (q=%d t=%d err=%d reconn=%d q=%d/%d)",
                 self.source.conn_id, len(self.source.subscribed), s.msgs_total, s.msgs_book, s.msgs_delta,
                 s.rows_delta, s.msgs_trade, s.msgs_tob, s.msgs_other, s.parse_errors, self.source.reconnects,
                 self.poller.gaps, self.poller.races, tob_mm, self.poller.polls, self.queue.qsize(), self.queue_max_seen,
                 self.last_write_latency_ms, self.raw.bytes_written / 1e6, self.parquet.bytes_written / 1e6,
                 s.mirror_dropped, s.mirror_kept,
+                sp.msgs, sp.quotes, sp.trades, sp.parse_errors, spot_reconn, self.spot_queue.qsize(), self.spot_queue_max_seen,
             )
             if self.parquet.pending_rows() >= rs.flush_max_rows:
                 asyncio.create_task(self._flush())

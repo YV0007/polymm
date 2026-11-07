@@ -57,10 +57,27 @@ class Family(BaseModel):
     event_slug: str | None = None
 
 
+class Spot(BaseModel):
+    """Binance spot feed recorded alongside Polymarket (the price that drives the BTC markets).
+
+    Why in the same process: one clock on one box stamps both feeds, which is what
+    makes "Binance moved at t, Polymarket followed at t+δ" measurable.
+    """
+
+    enabled: bool = True
+    # Why this host: Binance's market-data-only endpoint (no account, no key); the
+    # trading endpoint stream.binance.com carries the same public streams.
+    ws: str = "wss://data-stream.binance.vision"
+    symbols: list[str] = ["BTCUSDT"]
+    streams: list[str] = ["bookTicker", "trade"]
+    history_base: str = "https://data.binance.vision/data/spot/daily"
+
+
 class Config(BaseModel):
     paths: Paths = Field(default_factory=Paths)
     endpoints: Endpoints = Field(default_factory=Endpoints)
     recorder: RecorderSettings = Field(default_factory=RecorderSettings)
+    spot: Spot = Field(default_factory=Spot)
     families: list[Family]
 
     # Why: resolve relative paths against the config file's directory, so

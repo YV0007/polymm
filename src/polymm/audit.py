@@ -114,4 +114,29 @@ def run_audit(cfg: Config, date: str | None) -> int:
     """)
     print("-- recv - exchange latency on deltas (negative min = clock skew)")
     print(lat if lat is not None else "")
+
+    # ---- Binance spot ---------------------------------------------------------------
+    # Why the two checks: (1) coverage per hour shows where the feed broke; (2) the
+    # Binance event time vs our receive time is the only direct measure of how late
+    # we see the price that Polymarket's 15m markets are reacting to.
+    sq = _q(con, f"""
+        select hour, count(*) filter (where symbol <> '') as quotes,
+               count(*) filter (where symbol = '') as reconnects,
+               round(min(bid)) as min_bid, round(max(ask)) as max_ask,
+               round(avg(ask - bid), 2) as avg_spread,
+               round(max(ts_recv_ns) / 1e9 - min(ts_recv_ns) / 1e9) as span_s
+        from read_parquet({glob('spot_quotes', 'spot')}, hive_partitioning=1, union_by_name=1)
+        group by hour order by hour
+    """)
+    print("-- binance spot_quotes per hour (UTC)")
+    print(sq if sq is not None else "  no spot_quotes files\n")
+    st = _q(con, f"""
+        select count(*) as trades, round(sum(qty), 1) as btc_volume,
+               round(quantile_cont(ts_recv_ns/1e6 - event_ms, 0.5)) as p50_ms,
+               round(quantile_cont(ts_recv_ns/1e6 - event_ms, 0.99)) as p99_ms,
+               max(trade_id) - min(trade_id) + 1 - count(*) as missing_ids
+        from read_parquet({glob('spot_trades', 'spot')}, hive_partitioning=1, union_by_name=1)
+    """)
+    print("-- binance spot_trades: recv - event latency, missing trade ids (reconnect holes)")
+    print(st if st is not None else "  no spot_trades files\n")
     return 0

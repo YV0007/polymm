@@ -114,6 +114,38 @@ HEALTH = pa.schema(
         # Added 2026-11-07 (A1). Older files lack these: read with union_by_name.
         ("mirror_dropped", pa.int64()),  # outcome-1 rows not stored: exact mirror of outcome 0
         ("mirror_kept", pa.int64()),  # outcome-1 rows stored because no mirror matched
+        # Added 2026-11-07 (spot feed). Older files lack these: read with union_by_name.
+        ("spot_msgs", pa.int64()),
+        ("spot_reconnects", pa.int64()),
+    ]
+)
+
+# ---- spot layer (Binance) ----------------------------------------------------
+
+SPOT_QUOTES = pa.schema(  # <symbol>@bookTicker: Binance best bid/ask, real-time
+    [
+        ("ts_recv_ns", pa.int64()),  # our clock; Binance sends no timestamp on bookTicker
+        ("symbol", pa.string()),  # "" with null prices = reconnect marker (feed broke here)
+        ("update_id", pa.int64()),  # Binance order-book update id (monotonic per symbol)
+        ("bid", pa.float64()),
+        ("bid_qty", pa.float64()),
+        ("ask", pa.float64()),
+        ("ask_qty", pa.float64()),
+        ("conn_id", pa.int32()),
+    ]
+)
+
+SPOT_TRADES = pa.schema(  # <symbol>@trade
+    [
+        ("ts_recv_ns", pa.int64()),
+        ("ts_exch_ms", pa.int64()),  # trade time (T)
+        ("event_ms", pa.int64()),  # event time (E): when Binance emitted the message
+        ("symbol", pa.string()),
+        ("trade_id", pa.int64()),
+        ("price", pa.float64()),
+        ("qty", pa.float64()),
+        ("buyer_is_maker", pa.bool_()),  # True = taker SOLD (hit the bid)
+        ("conn_id", pa.int32()),
     ]
 )
 
@@ -156,6 +188,8 @@ TABLES: dict[str, pa.Schema] = {
     "resolutions": RESOLUTIONS,
     "health": HEALTH,
     "markets": MARKETS,
+    "spot_quotes": SPOT_QUOTES,
+    "spot_trades": SPOT_TRADES,
 }
 
 # Which layer directory each table lives under.
@@ -167,4 +201,6 @@ LAYER: dict[str, str] = {
     "resolutions": "events",
     "health": "events",
     "markets": "reference",
+    "spot_quotes": "spot",
+    "spot_trades": "spot",
 }

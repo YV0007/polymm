@@ -27,6 +27,13 @@ recorder:
   health_interval_s: 10
   custom_feature_enabled: true # also receive best_bid_ask, new_market, market_resolved
 
+spot:                          # Binance BTC/USDT, recorded in the same process (one clock for both feeds)
+  enabled: true
+  ws: wss://data-stream.binance.vision   # market-data-only endpoint, no key; 24 h max connection, then reconnect
+  symbols: [BTCUSDT]
+  streams: [bookTicker, trade] # best bid/ask on every change + every trade
+  history_base: https://data.binance.vision/data/spot/daily
+
 families:
   - name: btc_15m
     kind: updown

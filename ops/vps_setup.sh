@@ -48,3 +48,12 @@ systemctl enable --now polymm
 sleep 15
 systemctl --no-pager status polymm | head -5
 tail -n 2 /home/polymm/polymm/logs/recorder.log || true
+
+# ---- nightly Binance history backfill (yesterday's daily zip appears ~02:00 UTC) ----
+# Why cron, not a recorder task: it is a one-shot download that must survive
+# recorder restarts and is easier to re-run by hand (`polymm backfill-spot DATE`).
+CRON_LINE='30 3 * * * cd /home/polymm/polymm && /home/polymm/.local/bin/uv run --frozen polymm backfill-spot $(date -u -d yesterday +\%F) >> /home/polymm/polymm/logs/backfill-cron.log 2>&1'
+if ! crontab -u polymm -l 2>/dev/null | grep -q 'polymm backfill-spot'; then
+  (crontab -u polymm -l 2>/dev/null; echo "$CRON_LINE") | crontab -u polymm -
+  echo "installed nightly backfill-spot cron for polymm"
+fi

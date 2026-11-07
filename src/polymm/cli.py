@@ -1,4 +1,4 @@
-"""Command line: `polymm universe | record | audit | backfill`."""
+"""Command line: `polymm universe | record | audit | backfill | backfill-spot`."""
 from __future__ import annotations
 
 import argparse
@@ -82,6 +82,22 @@ def cmd_backfill(args) -> int:
     return asyncio.run(run_backfill(cfg, args.what))
 
 
+def cmd_backfill_spot(args) -> int:
+    from .spot import backfill_spot
+
+    cfg = load_config(args.config)
+    _setup_logging(cfg.log_dir, "backfill")
+    rc = 0
+    for date in args.dates:
+        try:
+            if backfill_spot(cfg, args.symbol, date, args.kind) is None:
+                rc = 2  # not published yet: let cron retry tomorrow
+        except Exception as e:
+            logging.getLogger(__name__).exception("backfill-spot %s %s failed: %r", args.symbol, date, e)
+            rc = 1
+    return rc
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="polymm")
     p.add_argument("-c", "--config", default="config.yaml")
@@ -92,8 +108,15 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--date", default=None, help="YYYY-MM-DD (UTC); default today")
     b = sub.add_parser("backfill", help="fetch historical trades / prices / resolutions for recorded markets")
     b.add_argument("what", nargs="?", default="all", choices=["all", "trades", "prices", "resolutions"])
+    bs = sub.add_parser("backfill-spot", help="fetch Binance daily spot history (data.binance.vision) into parquet")
+    bs.add_argument("dates", nargs="+", help="YYYY-MM-DD (UTC) ... ; a day is published the next UTC morning")
+    bs.add_argument("--symbol", default="BTCUSDT")
+    bs.add_argument("--kind", default="trades", choices=["trades", "aggTrades"])
     args = p.parse_args(argv)
-    return {"universe": cmd_universe, "record": cmd_record, "audit": cmd_audit, "backfill": cmd_backfill}[args.cmd](args)
+    return {
+        "universe": cmd_universe, "record": cmd_record, "audit": cmd_audit,
+        "backfill": cmd_backfill, "backfill-spot": cmd_backfill_spot,
+    }[args.cmd](args)
 
 
 if __name__ == "__main__":
