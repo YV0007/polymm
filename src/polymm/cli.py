@@ -1,4 +1,4 @@
-"""Command line: `polymm universe | record | audit | backfill | backfill-spot`."""
+"""Command line: `polymm universe | record | audit | backfill | backfill-spot | replay`."""
 from __future__ import annotations
 
 import argparse
@@ -98,6 +98,30 @@ def cmd_backfill_spot(args) -> int:
     return rc
 
 
+def cmd_replay(args) -> int:
+    from datetime import datetime, timedelta, timezone
+
+    from .replay import NS, ReplayConfig, Replayer, parse_ts, validation_report
+
+    cfg = load_config(args.config)
+    data_dir = Path(args.data) if args.data else cfg.data_dir
+    # Why --date as the default window: one UTC day is the unit the audit and the
+    # Parquet layout use; --t0/--t1 narrow or override it.
+    day = datetime.strptime(args.date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    t0 = parse_ts(args.t0) if args.t0 else int(day.timestamp() * NS)
+    t1 = parse_ts(args.t1) if args.t1 else int((day + timedelta(days=1)).timestamp() * NS)
+    out = None if args.validate_only else Path(args.out)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+    rc = ReplayConfig(data_dir=data_dir, out_dir=out, t0=t0, t1=t1, assets=set(args.asset) if args.asset else None,
+                      chunk_s=args.chunk_s)
+    rp = Replayer(rc)
+    stats = rp.run()
+    print(validation_report(rp.rest_checks_all, stats, ws_mismatches=rp.ws_mismatches, ws_lags=rp.ws_lags))
+    if out is not None:
+        print(f"derived tables written under {out / 'derived'}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="polymm")
     p.add_argument("-c", "--config", default="config.yaml")
@@ -112,10 +136,21 @@ def main(argv: list[str] | None = None) -> int:
     bs.add_argument("dates", nargs="+", help="YYYY-MM-DD (UTC) ... ; a day is published the next UTC morning")
     bs.add_argument("--symbol", default="BTCUSDT")
     bs.add_argument("--kind", default="trades", choices=["trades", "aggTrades"])
+    r = sub.add_parser("replay", help="rebuild books from stored events, write derived tables, validate against REST snapshots")
+    r.add_argument("--date", required=True, help="YYYY-MM-DD (UTC day to replay)")
+    r.add_argument("--out", default=None, help="output root; derived tables go under <out>/derived/ (required unless --validate-only)")
+    r.add_argument("--data", default=None, help="dataset root (default: paths.data_dir from config)")
+    r.add_argument("--asset", action="append", default=None, help="restrict to this asset_id (repeatable)")
+    r.add_argument("--t0", default=None, help="start, ISO UTC or ns (default: start of --date)")
+    r.add_argument("--t1", default=None, help="end (exclusive), ISO UTC or ns (default: end of --date)")
+    r.add_argument("--chunk-s", type=int, default=600, help="seconds of events held in memory at once")
+    r.add_argument("--validate-only", action="store_true", help="print the REST match report; write nothing")
     args = p.parse_args(argv)
+    if args.cmd == "replay" and not args.validate_only and not args.out:
+        p.error("replay: --out is required unless --validate-only")
     return {
         "universe": cmd_universe, "record": cmd_record, "audit": cmd_audit,
-        "backfill": cmd_backfill, "backfill-spot": cmd_backfill_spot,
+        "backfill": cmd_backfill, "backfill-spot": cmd_backfill_spot, "replay": cmd_replay,
     }[args.cmd](args)
 
 
