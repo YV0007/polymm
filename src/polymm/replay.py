@@ -101,11 +101,15 @@ EVENTS_LABELED = pa.schema(
         ("size_after", pa.float64()),
         ("size_change", pa.float64()),  # after - before
         ("label", pa.string()),  # add | fill | cancel | unchanged
-        ("trade_ts_recv_ns", pa.int64()),  # the matched trade (fill only)
-        ("trade_size", pa.float64()),
+        ("trade_ts_recv_ns", pa.int64()),  # the nearest matched trade (fill only)
+        ("trade_size", pa.float64()),  # that trade's size
         ("trade_lag_ns", pa.int64()),  # delta ts - trade ts (negative: delta came first)
         ("mirrored", pa.bool_()),  # derived from the sibling token's stored row (A1)
         ("conn_id", pa.int32()),
+        # Added 2026-11-07 (D-017): a delta may absorb several trades (one taker
+        # order hitting several makers at one level = several trade messages, ONE delta).
+        ("n_trades", pa.int32()),  # trades matched to this delta (0 unless label = fill)
+        ("trade_size_sum", pa.float64()),  # their total size; size_change + trade_size_sum = cancelled on top
     ]
 )
 
@@ -115,7 +119,7 @@ CLEAN_WINDOWS = pa.schema(
         ("t_start", pa.int64()),
         ("t_end", pa.int64()),
         ("start_kind", pa.string()),  # snapshot_ws | snapshot_rest | rest_resync
-        ("end_reason", pa.string()),  # reconnect | rest_gap | ws_gap | end
+        ("end_reason", pa.string()),  # reconnect | idle | rest_gap | ws_gap | end
         ("last_verified", pa.int64()),  # ts of the last REST or WS snapshot that matched inside the window
         ("n_events", pa.int64()),
     ]
@@ -611,18 +615,30 @@ class Replayer:
 
     def _reconnect(self, a: _Asset, ts: int) -> None:
         """Mark one book stale from `ts` until its next snapshot. Idempotent per
-        (asset, reconnect): each market's loop and `_finish_chunk` may both see it."""
+        (asset, reconnect): each market's loop and `_finish_chunk` may both see it.
+
+        Why the idle rule (D-018): a token with no event for longer than
+        `grid_max_idle_s` before the reconnect is not subscribed any more (a
+        subscribed token gets a REST anchor at least every 5-10 min), so it gets no
+        `reconnect` row in `tob` and its window ends at its last event, not at
+        every later reconnect until midnight."""
         if ts <= a.last_reconnect:
             return
         a.last_reconnect = ts
-        if a.initialised and not a.stale:
-            self._grid_catch_up(a, ts)
+        if not (a.initialised and not a.stale):
+            return
+        if ts - a.last_event_ts > self.grid_idle:
             a.stale = True
-            a.close_window(ts, "reconnect")
-            for p in a.pending:  # cannot be judged any more
-                self._record_check(a, p.ts, True, False, "gap", 0, p.n_levels, -1, "reconnect before the window closed")
+            a.close_window(a.last_event_ts, "idle")
             a.pending = []
-            self._emit_tob(a, ts, "reconnect")
+            return
+        self._grid_catch_up(a, ts)
+        a.stale = True
+        a.close_window(ts, "reconnect")
+        for p in a.pending:  # cannot be judged any more
+            self._record_check(a, p.ts, True, False, "gap", 0, p.n_levels, -1, "reconnect before the window closed")
+        a.pending = []
+        self._emit_tob(a, ts, "reconnect")
 
     # -- the per-market loop ------------------------------------------------------------
 
@@ -855,7 +871,9 @@ class Replayer:
                          self.stats["rows"], el, self.stats["rows"] / el / 1e3 if el else 0)
             c0 = c1
         for a in self.assets.values():
-            a.close_window(t1, "end")
+            # Why last_event_ts, not t1: a token unsubscribed hours earlier is not
+            # a book anybody recorded until the end of the window (D-018).
+            a.close_window(a.last_event_ts, "end")
         if self.want["clean_windows"]:
             self.buf["clean_windows"].extend(w for a in self.assets.values() if a.emit for w in a.windows)
             self._write_chunk(t0, only=("clean_windows",))
@@ -868,6 +886,17 @@ class Replayer:
     # -- labelling ---------------------------------------------------------------------------
 
     def _label_events(self, tspans: list[FileSpan], c0: int, c1: int) -> None:
+        """Label the chunk's deltas; fills are found trade -> delta (D-017).
+
+        Why trade -> delta and not delta -> trade: a trade explains ONE level
+        decrease, but many decreases happen near a trade (quotes pulled across the
+        book), so the earlier nearest-trade-per-delta rule tagged 11 fill rows per
+        trade. Each trade now picks at most one delta per token: among the size
+        decreases at its price on the side it consumed within +-label_window, the
+        nearest in time whose decrease is at least the trade size (a smaller one
+        cannot be this fill); if none is that large, the nearest. Several trades may
+        pick the same delta: one taker order that hits several makers at one level
+        is several `last_trade_price` messages and ONE delta."""
         rows = self.buf["events_labeled"]
         self.buf["events_labeled"] = []
         if not rows:
@@ -879,8 +908,10 @@ class Replayer:
         ).with_row_index("_i")
         ev = ev.with_columns((pl.col("size_after") - pl.col("size_before")).alias("size_change"),
                              (pl.col("price") * 1e6).round(0).cast(pl.Int64).alias("_px"))
-        tr = read_events([s for s in tspans if s.ts_max >= c0 - self.LW and s.ts_min < c1 + self.LW],
-                         c0 - self.LW, c1 + self.LW, None, ["ts_recv_ns", "asset_id", "price", "size", "side"])
+        LW = self.LW
+        tr = read_events([s for s in tspans if s.ts_max >= c0 - LW and s.ts_min < c1 + LW],
+                         c0 - LW, c1 + LW, None, ["ts_recv_ns", "asset_id", "price", "size", "side"])
+        matched = None
         if tr.height:
             # Why both own and mirrored trades: a trade is stored once, on the token the
             # taker traded. A taker BUY on YES at p consumes the YES ask at p, which is
@@ -893,21 +924,43 @@ class Replayer:
                 pl.col("asset_id").replace_strict(sib, return_dtype=pl.String),
                 (1.0 - pl.col("price")).round(9).alias("price"),
                 pl.when(pl.col("side") == "BUY").then(pl.lit("BUY")).otherwise(pl.lit("SELL")).alias("side"))
-            trades = pl.concat([own, mir]).with_columns((pl.col("price") * 1e6).round(0).cast(pl.Int64).alias("_px")) \
-                .rename({"ts_recv_ns": "trade_ts_recv_ns", "size": "trade_size"}).select("trade_ts_recv_ns", "asset_id", "side", "_px", "trade_size") \
-                .sort("trade_ts_recv_ns")
-            down = ev.filter(pl.col("size_change") < 0).sort("ts_recv_ns")
-            j = down.join_asof(trades, left_on="ts_recv_ns", right_on="trade_ts_recv_ns", by=["asset_id", "side", "_px"],
-                               strategy="nearest", tolerance=self.LW, check_sortedness=False).select("_i", "trade_ts_recv_ns", "trade_size")
-            ev = ev.join(j, on="_i", how="left")
+            keys = pl.concat([own, mir]).with_columns(
+                (pl.col("price") * 1e6).round(0).cast(pl.Int64).alias("_px"),
+                (pl.col("ts_recv_ns") // LW).alias("_b"),
+            ).rename({"ts_recv_ns": "trade_ts_recv_ns", "size": "trade_size"}) \
+                .select("trade_ts_recv_ns", "asset_id", "side", "_px", "_b", "trade_size").with_row_index("_k")
+            # Why time buckets: candidates are "same token, side, price, within +-LW".
+            # An equi-join on (token, side, price, LW-bucket) with the key duplicated
+            # into the neighbouring buckets finds them all without a range join.
+            keys3 = pl.concat([keys.with_columns((pl.col("_b") + d).alias("_b")) for d in (-1, 0, 1)])
+            down = ev.filter(pl.col("size_change") < 0).select(
+                "_i", "ts_recv_ns", "asset_id", "side", "_px", (-pl.col("size_change")).alias("_dec"),
+                (pl.col("ts_recv_ns") // LW).alias("_b"))
+            cand = keys3.join(down, on=["asset_id", "side", "_px", "_b"], how="inner") \
+                .with_columns((pl.col("ts_recv_ns") - pl.col("trade_ts_recv_ns")).alias("trade_lag_ns")) \
+                .filter(pl.col("trade_lag_ns").abs() <= LW) \
+                .with_columns((pl.col("_dec") < pl.col("trade_size") - 1e-6).alias("_small"))
+            pick = cand.sort(["_k", "_small", pl.col("trade_lag_ns").abs()]).unique("_k", keep="first", maintain_order=True)
+            matched = pick.group_by("_i").agg(
+                pl.col("trade_ts_recv_ns").sort_by(pl.col("trade_lag_ns").abs()).first(),
+                pl.col("trade_size").sort_by(pl.col("trade_lag_ns").abs()).first(),
+                pl.col("trade_lag_ns").sort_by(pl.col("trade_lag_ns").abs()).first(),
+                pl.len().cast(pl.Int32).alias("n_trades"),
+                pl.col("trade_size").sum().alias("trade_size_sum"),
+            )
+        if matched is not None and matched.height:
+            ev = ev.join(matched, on="_i", how="left")
         else:
-            ev = ev.with_columns(pl.lit(None, dtype=pl.Int64).alias("trade_ts_recv_ns"), pl.lit(None, dtype=pl.Float64).alias("trade_size"))
+            ev = ev.with_columns(pl.lit(None, dtype=pl.Int64).alias("trade_ts_recv_ns"), pl.lit(None, dtype=pl.Float64).alias("trade_size"),
+                                 pl.lit(None, dtype=pl.Int64).alias("trade_lag_ns"), pl.lit(None, dtype=pl.Int32).alias("n_trades"),
+                                 pl.lit(None, dtype=pl.Float64).alias("trade_size_sum"))
         ev = ev.with_columns(
             pl.when(pl.col("size_change") > 0).then(pl.lit("add"))
             .when(pl.col("size_change") == 0).then(pl.lit("unchanged"))
             .when(pl.col("trade_ts_recv_ns").is_not_null()).then(pl.lit("fill"))
             .otherwise(pl.lit("cancel")).alias("label"),
-            (pl.col("ts_recv_ns") - pl.col("trade_ts_recv_ns")).alias("trade_lag_ns"),
+            pl.col("n_trades").fill_null(0),
+            pl.col("trade_size_sum").fill_null(0.0),
         ).sort("_i").select([f.name for f in EVENTS_LABELED])
         self._labeled_df = ev
 

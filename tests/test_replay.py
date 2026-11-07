@@ -28,6 +28,7 @@ from polymm.replay import (
 T0 = parse_ts("2026-11-06T15:00:00")
 YES, NO = "yes-token", "no-token"
 COND = "0xcond"
+YES2, NO2, COND2 = "yes-token-2", "no-token-2", "0xcond2"  # a second market for multi-market scenarios
 DATA = Path(os.environ.get("POLYMM_DATA", "/Users/macbook/Desktop/POLY MM/data"))
 
 
@@ -38,19 +39,23 @@ def _ms(ts_ns: int) -> int:
     return ts_ns // 1_000_000
 
 
+def _cond(aid):
+    return COND2 if aid in (YES2, NO2) else COND
+
+
 def snap(ts, aid, bids, asks, hash_="", kind="snapshot_ws", conn=1):
     rows = []
     for p, s in bids:
-        rows.append((ts, _ms(ts), aid, COND, kind, ts, "BUY", p, s, hash_, None, None, 0.01, conn))
+        rows.append((ts, _ms(ts), aid, _cond(aid), kind, ts, "BUY", p, s, hash_, None, None, 0.01, conn))
     for p, s in asks:
-        rows.append((ts, _ms(ts), aid, COND, kind, ts, "SELL", p, s, hash_, None, None, 0.01, conn))
+        rows.append((ts, _ms(ts), aid, _cond(aid), kind, ts, "SELL", p, s, hash_, None, None, 0.01, conn))
     if not rows:
-        rows.append((ts, _ms(ts), aid, COND, kind, ts, None, None, None, hash_, None, None, 0.01, conn))
+        rows.append((ts, _ms(ts), aid, _cond(aid), kind, ts, None, None, None, hash_, None, None, 0.01, conn))
     return rows
 
 
 def delta(ts, aid, side, price, size, hash_="", conn=1):
-    return [(ts, _ms(ts), aid, COND, "delta", None, side, price, size, hash_, None, None, None, conn)]
+    return [(ts, _ms(ts), aid, _cond(aid), "delta", None, side, price, size, hash_, None, None, None, conn)]
 
 
 def reconnect(ts, conn=1):
@@ -77,6 +82,8 @@ def write_dataset(root: Path, events: list[tuple], trades: list[tuple] = ()) -> 
     mrows = [
         (T0, "subscribe", "test", "ev", "mk", "q?", COND, YES, "Yes", "", "", 0.01, 5.0, False, False, 0.0, 0.0, 0.0, 0.0, 0.0, True, 0),
         (T0, "subscribe", "test", "ev", "mk", "q?", COND, NO, "No", "", "", 0.01, 5.0, False, False, 0.0, 0.0, 0.0, 0.0, 0.0, True, 1),
+        (T0, "subscribe", "test", "ev2", "mk2", "q2?", COND2, YES2, "Yes", "", "", 0.01, 5.0, False, False, 0.0, 0.0, 0.0, 0.0, 0.0, True, 0),
+        (T0, "subscribe", "test", "ev2", "mk2", "q2?", COND2, NO2, "No", "", "", 0.01, 5.0, False, False, 0.0, 0.0, 0.0, 0.0, 0.0, True, 1),
     ]
     _write("markets", MARKETS, mrows, layer="reference")
     return root
@@ -296,6 +303,71 @@ def test_labels_add_fill_cancel(tmp_path):
     f = n.filter(pl.col("ts_recv_ns") == T0 + 2 * NS).row(0, named=True)
     assert f["label"] == "fill" and f["side"] == "BUY" and f["price"] == 0.48 and f["trade_size"] == 3
     assert n.filter(pl.col("ts_recv_ns") == T0 + 3 * NS)["label"].item() == "cancel"  # mirrored cancel at NO bid 0.47
+
+
+def test_fill_matching_is_one_to_one_and_size_aware(tmp_path):
+    ms = 10**6
+    ev = snap(T0, YES, [(0.50, 10)], [(0.52, 20), (0.53, 20), (0.54, 20)], "h0")
+    ev += snap(T0, NO, [(0.48, 20), (0.47, 20), (0.46, 20)], [(0.50, 10)], "h0n")
+    # level 0.52: a cancel 300 ms before the trade and the real fill 1 ms before it
+    ev += delta(T0 + 700 * ms, YES, "SELL", 0.52, 15, "a")
+    ev += delta(T0 + 700 * ms, NO, "BUY", 0.48, 15, "a")
+    ev += delta(T0 + 999 * ms, YES, "SELL", 0.52, 10, "b")
+    ev += delta(T0 + 999 * ms, NO, "BUY", 0.48, 10, "b")
+    # level 0.53: a decrease smaller than the trade 1 ms away, the right one 200 ms away
+    ev += delta(T0 + 2001 * ms, YES, "SELL", 0.53, 18, "c")
+    ev += delta(T0 + 2001 * ms, NO, "BUY", 0.47, 18, "c")
+    ev += delta(T0 + 2200 * ms, YES, "SELL", 0.53, 10, "d")
+    ev += delta(T0 + 2200 * ms, NO, "BUY", 0.47, 10, "d")
+    # level 0.54: one delta absorbing three trades (one taker order, three makers)
+    ev += delta(T0 + 3000 * ms, YES, "SELL", 0.54, 8, "e")
+    ev += delta(T0 + 3000 * ms, NO, "BUY", 0.46, 8, "e")
+    trades = [
+        trade(T0 + 1000 * ms, YES, 0.52, 5, "BUY"),
+        trade(T0 + 2000 * ms, YES, 0.53, 8, "BUY"),
+        trade(T0 + 3001 * ms, YES, 0.54, 5, "BUY"),
+        trade(T0 + 3002 * ms, YES, 0.54, 4, "BUY"),
+        trade(T0 + 3003 * ms, YES, 0.54, 3, "BUY"),
+    ]
+    write_dataset(tmp_path, ev, trades)
+    run(tmp_path)
+    for asset, lvl in ((YES, (0.52, 0.53, 0.54)), (NO, (0.48, 0.47, 0.46))):
+        lab = derived(tmp_path, "events_labeled", asset).sort("ts_recv_ns")
+        by = {(round(r["price"], 6), r["ts_recv_ns"]): r for r in lab.iter_rows(named=True)}
+        assert by[(lvl[0], T0 + 700 * ms)]["label"] == "cancel"
+        f = by[(lvl[0], T0 + 999 * ms)]
+        assert f["label"] == "fill" and f["n_trades"] == 1 and f["trade_size"] == 5 and f["trade_lag_ns"] == -1 * ms
+        assert by[(lvl[1], T0 + 2001 * ms)]["label"] == "cancel"  # 2 shares cannot be an 8-share fill
+        g = by[(lvl[1], T0 + 2200 * ms)]
+        assert g["label"] == "fill" and g["trade_size_sum"] == 8 and g["size_change"] == -8
+        h = by[(lvl[2], T0 + 3000 * ms)]
+        assert h["label"] == "fill" and h["n_trades"] == 3 and h["trade_size_sum"] == 12 and h["size_change"] == -12
+        assert h["trade_size"] == 5 and h["trade_lag_ns"] == -1 * ms  # nearest trade's own size
+        assert lab.filter(pl.col("label") == "fill").height == 3
+        assert (lab.filter(pl.col("label") != "fill")["n_trades"] == 0).all()
+
+
+def test_idle_token_gets_no_reconnect_rows_and_windows_end_at_last_event(tmp_path):
+    # market 1 stays active; market 2's last event is 20 min before the reconnect (unsubscribed)
+    ev = snap(T0, YES, [(0.50, 10)], [(0.52, 5)], "a")
+    ev += snap(T0, YES2, [(0.30, 5)], [(0.32, 10)], "b")
+    ev += delta(T0 + 1 * NS, YES2, "BUY", 0.30, 6, "c")
+    ev += delta(T0 + 1 * NS, YES, "BUY", 0.50, 11, "c")
+    ev += delta(T0 + 1190 * NS, YES, "BUY", 0.50, 12, "d")
+    ev += reconnect(T0 + 1200 * NS)
+    ev += snap(T0 + 1201 * NS, YES, [(0.50, 12)], [(0.52, 5)], "e", conn=2)
+    ev += delta(T0 + 1300 * NS, YES, "BUY", 0.50, 13, "f", conn=2)
+    write_dataset(tmp_path, ev)
+    run(tmp_path, t1=T0 + 3600 * NS, chunk_s=600)
+    assert "reconnect" not in derived(tmp_path, "tob", YES2)["event_type"].to_list()
+    assert derived(tmp_path, "tob", YES).filter(pl.col("event_type") == "reconnect").height == 1
+    w2 = derived(tmp_path, "clean_windows", YES2)
+    assert w2["t_end"].to_list() == [T0 + 1 * NS] and w2["end_reason"].to_list() == ["idle"]
+    wy = derived(tmp_path, "clean_windows", YES).sort("t_start")
+    assert wy["end_reason"].to_list() == ["reconnect", "end"]
+    assert wy["t_end"].to_list() == [T0 + 1200 * NS, T0 + 1300 * NS]  # last window ends at the last event, not t1
+    # depth grid rows for the idle market stop 15 min after its last event
+    assert derived(tmp_path, "depth_1s", YES2)["ts_recv_ns"].max() <= T0 + 1 * NS + 900 * NS
 
 
 # ---- tests: mirror rule (A1) ------------------------------------------------------------------
