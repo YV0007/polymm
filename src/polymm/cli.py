@@ -1,4 +1,4 @@
-"""Command line: `polymm universe | record | audit | backfill | backfill-spot | replay`."""
+"""Command line: `polymm universe | record | audit | backfill | backfill-spot | replay | quality`."""
 from __future__ import annotations
 
 import argparse
@@ -122,6 +122,32 @@ def cmd_replay(args) -> int:
     return 0
 
 
+def cmd_quality(args) -> int:
+    from datetime import datetime, timedelta, timezone
+
+    from .quality import QualityConfig, run_quality, summary_line
+    from .replay import NS, parse_ts
+
+    cfg = load_config(args.config)
+    data_dir = Path(args.data) if args.data else cfg.data_dir
+    day = datetime.strptime(args.date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    t0 = parse_ts(args.t0) if args.t0 else int(day.timestamp() * NS)
+    t1 = parse_ts(args.t1) if args.t1 else int((day + timedelta(days=1)).timestamp() * NS)
+    # Why reports/<date> by default: one folder per day holds the replay, the
+    # report and the strict windows every later analysis starts from.
+    out = Path(args.out) if args.out else Path("reports") / args.date
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+    qc = QualityConfig(date=args.date, data_dir=data_dir, out_dir=out,
+                       replay_out=Path(args.replay_out) if args.replay_out else None, t0=t0, t1=t1)
+    res = run_quality(qc)
+    print(f"quality {args.date}: {summary_line(res)}")
+    for c in res.checks:
+        if c.status in ("FAIL", "WARN"):
+            print(f"  {c.status} {c.section}/{c.name} [{c.family}] = {c.value_str()} ({c.threshold}) {c.note}")
+    print(f"report: {out / 'quality.md'}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="polymm")
     p.add_argument("-c", "--config", default="config.yaml")
@@ -145,12 +171,19 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--t1", default=None, help="end (exclusive), ISO UTC or ns (default: end of --date)")
     r.add_argument("--chunk-s", type=int, default=600, help="seconds of events held in memory at once")
     r.add_argument("--validate-only", action="store_true", help="print the REST match report; write nothing")
+    q = sub.add_parser("quality", help="replay (or reuse) a day, run the data-quality checks, write reports/<date>/quality.md")
+    q.add_argument("--date", required=True, help="YYYY-MM-DD (UTC day)")
+    q.add_argument("--data", default=None, help="dataset root (default: paths.data_dir from config)")
+    q.add_argument("--replay-out", default=None, help="replay output root; reused if <dir>/derived exists (default: <out>/replay)")
+    q.add_argument("--out", default=None, help="report folder (default: reports/<date>)")
+    q.add_argument("--t0", default=None, help="start, ISO UTC or ns (default: start of --date)")
+    q.add_argument("--t1", default=None, help="end (exclusive), ISO UTC or ns (default: end of --date)")
     args = p.parse_args(argv)
     if args.cmd == "replay" and not args.validate_only and not args.out:
         p.error("replay: --out is required unless --validate-only")
     return {
         "universe": cmd_universe, "record": cmd_record, "audit": cmd_audit,
-        "backfill": cmd_backfill, "backfill-spot": cmd_backfill_spot, "replay": cmd_replay,
+        "backfill": cmd_backfill, "backfill-spot": cmd_backfill_spot, "replay": cmd_replay, "quality": cmd_quality,
     }[args.cmd](args)
 
 
