@@ -1,4 +1,4 @@
-"""Command line: `polymm universe | record | audit | backfill | backfill-spot | replay | quality | shape`."""
+"""Command line: `polymm universe | record | audit | backfill | backfill-spot | replay | quality | shape | vol`."""
 from __future__ import annotations
 
 import argparse
@@ -171,6 +171,32 @@ def cmd_shape(args) -> int:
     return 0
 
 
+def cmd_vol(args) -> int:
+    from .vol import VolConfig, run_vol
+
+    cfg = load_config(args.config)
+    data_dir = Path(args.data) if args.data else cfg.data_dir
+    # Why a separate --spot-data: the laptop dataset has the Polymarket books of the clean
+    # block but no Binance tables; those live in the VPS copy.
+    out = Path(args.out) if args.out else Path("reports") / args.date / "vol"
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+    vc = VolConfig(date=args.date, data_dir=data_dir, out_dir=out, spot_dir=Path(args.spot_data) if args.spot_data else None,
+                   replay_out=Path(args.replay_out) if args.replay_out else None,
+                   strict_path=Path(args.strict) if args.strict else None, plots=not args.no_plots)
+    btc, poly = run_vol(vc)
+    print(f"vol {args.date}: chosen BTC estimator {btc.chosen.get('estimator')} (QLIKE {btc.chosen.get('qlike', float('nan')):.3f})")
+    if poly is not None and "sigma_x_family" in poly.tables:
+        import polars as pl
+        for row in poly.tables["sigma_x_family"].filter(pl.col("k_s") == 10).iter_rows(named=True):
+            print(f"  sigma_x(10 s) {row['family']:<18} {row['sigma_x']:.4f}  (n={row['n']:,})")
+        s = poly.tables.get("implied_15m_summary")
+        if s is not None and s.height:
+            r = s.row(0, named=True)
+            print(f"  btc_15m implied/realized median {r['median_ratio_impl_over_realized_60s']:.2f} over {r["n_windows_fit"]} windows")
+    print(f"outputs: {out}/summary.md, sigma_btc.parquet, tables/, *.png")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="polymm")
     p.add_argument("-c", "--config", default="config.yaml")
@@ -209,6 +235,14 @@ def main(argv: list[str] | None = None) -> int:
     sh.add_argument("--out", default=None, help="report folder (default: <quality-dir>/shape)")
     sh.add_argument("--t0", default=None, help="start, ISO UTC or ns (default: start of --date)")
     sh.add_argument("--t1", default=None, help="end (exclusive), ISO UTC or ns (default: end of --date)")
+    v = sub.add_parser("vol", help="volatility: BTC realized/EWMA σ, forecast scores, Polymarket σ_x per family, implied vs realized")
+    v.add_argument("--date", required=True, help="YYYY-MM-DD (UTC day)")
+    v.add_argument("--data", default=None, help="Polymarket dataset root (default: paths.data_dir from config)")
+    v.add_argument("--spot-data", default=None, help="root holding spot/ and backfill/ (default: --data)")
+    v.add_argument("--replay-out", default=None, help="replay output root holding derived/ (default: reports/<date>/replay)")
+    v.add_argument("--strict", default=None, help="clean_windows_strict.parquet (default: reports/<date>/clean_windows_strict.parquet)")
+    v.add_argument("--out", default=None, help="output folder (default: reports/<date>/vol)")
+    v.add_argument("--no-plots", action="store_true", help="skip PNGs (matplotlib not needed)")
     args = p.parse_args(argv)
     if args.cmd == "replay" and not args.validate_only and not args.out:
         p.error("replay: --out is required unless --validate-only")
@@ -216,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         "universe": cmd_universe, "record": cmd_record, "audit": cmd_audit,
         "backfill": cmd_backfill, "backfill-spot": cmd_backfill_spot, "replay": cmd_replay, "quality": cmd_quality,
         "shape": cmd_shape,
+        "vol": cmd_vol,
     }[args.cmd](args)
 
 
