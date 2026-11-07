@@ -1,6 +1,6 @@
 # Replay tool: order book reconstruction and validation
 
-Date: 2026-11-07. Code: `src/polymm/replay.py`, CLI `polymm replay`, tests `tests/test_replay.py`.
+Date: 2026-11-07, revised the same day for D-020/D-021 (fill matching, window ends). Code: `src/polymm/replay.py`, CLI `polymm replay`, tests `tests/test_replay.py`.
 
 ## 1. What was built
 
@@ -25,8 +25,8 @@ against the independently recorded REST snapshots.
 |---|---|---|
 | `tob` | after every event per asset | `ts_recv_ns, asset_id, event_type, best_bid, bid_size, best_ask, ask_size, mid, microprice, spread, valid`. `valid` is false before the first snapshot, while stale after a reconnect, and when a side is empty or the book is crossed. `event_type` also takes `reconnect` (the invalidating row) and `resync` (book replaced after a confirmed gap). |
 | `depth_1s` | one per (whole second, asset), as-of semantics: events with `ts_recv_ns <= second` included | wide: `bid_px_1..5`, `bid_cum_1..5`, `ask_px_1..5`, `ask_cum_1..5` (price of the k-th best level, CUMULATIVE size through level k; level size = `cum_k - cum_{k-1}`), `n_bid_levels`, `n_ask_levels`, `valid`. Rows stop 15 min after an asset's last event (unsubscribed BTC 15-minute windows would otherwise produce a row per second until midnight). |
-| `events_labeled` | every delta (incl. mirrored ones, see §4) | `side, price, size_before, size_after, size_change, label ∈ {add, fill, cancel, unchanged}, trade_ts_recv_ns, trade_size, trade_lag_ns, mirrored, conn_id`. `fill` = size down with a trade on that asset, at that price, consuming that side (taker BUY consumes the ask side), within ±1 s; nearest trade wins. Trades are stored once per fill on the taker's token, so the sibling's deltas are matched against the mirrored trade (YES BUY at p ≡ NO SELL at 1−p). |
-| `clean_windows` | per asset, `[t_start, t_end)` where the reconstruction is trusted | `start_kind ∈ {snapshot_ws, snapshot_rest, rest_resync}`, `end_reason ∈ {reconnect, rest_gap, ws_gap, end}`, `last_verified` (ts of the last REST or WS snapshot that matched inside the window), `n_events` |
+| `events_labeled` | every delta (incl. mirrored ones, see §4) | `side, price, size_before, size_after, size_change, label ∈ {add, fill, cancel, unchanged}, trade_ts_recv_ns, trade_size, trade_lag_ns, mirrored, conn_id, n_trades, trade_size_sum`. Matching is trade → delta (D-020): each trade picks at most one size decrease per token, the nearest within ±1 s at its price on the side it consumed (taker BUY consumes the ask side) whose decrease is at least the trade size, else the nearest; several trades may pick one delta (`n_trades`, `trade_size_sum`; `trade_ts_recv_ns`/`trade_size`/`trade_lag_ns` describe the nearest one). `label = fill` only on picked deltas; `size_change + trade_size_sum` is what was cancelled on top. Trades are stored once per fill on the taker's token, so the sibling's deltas are matched against the mirrored trade (YES BUY at p ≡ NO SELL at 1−p). |
+| `clean_windows` | per asset, `[t_start, t_end)` where the reconstruction is trusted | `start_kind ∈ {snapshot_ws, snapshot_rest, rest_resync}`, `end_reason ∈ {reconnect, idle, rest_gap, ws_gap, end}`, `last_verified` (ts of the last REST or WS snapshot that matched inside the window), `n_events`. A token's last window ends at its last event (D-021); `idle` = the token had no event for 15 min before a reconnect, i.e. was unsubscribed. |
 | `rest_checks` | one per REST snapshot | `in_window, matched, kind ∈ {exact, before, after, init, gap}, lag_ns, n_rest_levels, n_diff, reason` |
 
 Read with DuckDB `read_parquet('<out>/derived/tob/**/*.parquet', hive_partitioning=1)` or polars `scan_parquet`.
@@ -85,8 +85,11 @@ mismatches: 0
   why the REST rate alone would overstate cleanliness. Replay therefore ends the clean
   window at the asset's last applied event (`end_reason = ws_gap`) and starts a new one at
   the snapshot.
-- **Clean windows in the block:** 845 windows; 694 end at one of the 8 reconnects, 81 at a
-  `ws_gap`, 70 at the end of the block. Server-reported `best_bid/best_ask` on deltas agree
+- **Clean windows in the block** (after D-021): 845 windows; 606 end at one of the 8
+  reconnects, 88 end `idle` at the token's last event before a reconnect (unsubscribed BTC
+  15-minute tokens), 81 at a `ws_gap`, 70 at the token's last event before the end of the
+  block. Total window time 766 h, down from 874 h when unsubscribed tokens kept a window
+  until the end of the range. Server-reported `best_bid/best_ask` on deltas agree
   with the replayed top of book on 99.84 % of deltas in hour 15 (DATA_PLAN quoted ~99.6 %);
   the replayed book is the one that matches the snapshots, so it is the reference.
 - **A1-era data (mirror rule on real data):** 2026-11-07 09:00 → 11:28, where outcome-1
@@ -139,13 +142,26 @@ data (REST checks of outcome-1 tokens from 2026-11-07 on) is a follow-up.
 - **Where a gap started is unknown.** A `rest_gap` ends the window at the REST timestamp
   and a `ws_gap` at the last applied event; the dropped delta may lie anywhere after
   `last_verified`. Strict users should trim windows to `[t_start, last_verified]`.
-- **The depth grid stops 15 min after an asset's last event** (`grid_max_idle_s`). A token
-  that is subscribed but silent for longer than that gets no rows until its next event;
-  with REST anchors every 10 min this does not happen while the recorder is healthy.
-- **Fill labels are a heuristic**: nearest trade on the same asset, price and consumed side
-  within ±1 s; a level that shrank by more than the trade size is still one `fill` row
-  (`trade_size` vs `size_change` tells how much was a cancel on top). Two trades at one
-  level within the window are matched by time only.
+- **15 min of silence means unsubscribed** (`grid_max_idle_s`, D-021): the depth grid stops,
+  a later reconnect writes no `reconnect` row and closes the window at the last event
+  (`idle`). A subscribed token silent for longer than that (REST polls failing for 15 min)
+  would be treated the same way; its next snapshot simply opens a new window.
+- **Fill labels are a heuristic** (D-020, revised after `polymm quality` found 11.4 fill
+  rows per trade with the first delta → trade rule): trade → delta, one delta per trade and
+  token, nearest in time with a size filter. A delta can still be mislabelled when a cancel
+  at the same price lands closer to the trade message than the real fill, or when a level
+  is hit and re-quoted within one delta. Measured with
+  `polymm quality` on the 2026-11-06 block, before → after the revision: fill rows per
+  labelled trade 10.88 → 1.001 (btc_15m 11.44 → 1.001, ladder 1.59 → 1.00, Fed 1.45 → 1.00);
+  fill rows that shrink by exactly the trade size 7.9 % → 44.0 %; "trade has a size
+  decrease at its price within 1 s" unchanged at 99.77 % (it is computed from the raw
+  decreases, not from the labels). 103,330 fill deltas absorb 121,970 trades: 87 % carry one
+  trade, 10 % two, 3 % three or more (one taker order hitting several makers). For deltas
+  with several trades the decrease is on average smaller than `trade_size_sum` (the size
+  filter is applied per trade, not per group, and a level can be hit and partly re-quoted
+  inside one delta), so `size_change + trade_size_sum` is only an estimate of the cancelled
+  part. Quality after the revision: 0 FAIL, 1 WARN (ladder taker-side consistency 95.1 %,
+  unchanged from before), 67 PASS.
 - **`book_at` / `iter_books` re-scan Parquet footers per call** (~0.5 s for a day of files);
   fine for ad-hoc use, use `Replayer` for anything that loops over many instants.
 - **Derived output location.** The block's tables were written to
