@@ -65,7 +65,7 @@ def _recorded_markets(cfg: Config) -> list[tuple[str, str, str]]:
     con = duckdb.connect()
     try:
         return con.sql(
-            f"select distinct condition_id, asset_id, outcome from read_parquet('{cfg.data_dir}/reference/markets/**/*.parquet')"
+            f"select distinct condition_id, asset_id, outcome from read_parquet('{cfg.data_dir}/reference/markets/**/*.parquet', union_by_name=1)"
         ).fetchall()
     except duckdb.IOException:
         return []

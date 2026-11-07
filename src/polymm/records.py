@@ -6,6 +6,10 @@ append to the same dataset cleanly. Fixed schemas make every file identical.
 
 Rows are plain tuples in schema column order (fast to append at ~1k rows/s);
 the schema is the single source of truth for column names and types.
+
+Schema evolution rule: only ever ADD columns, at the END. Readers must pass
+`union_by_name=true` (DuckDB) / `missing_columns='insert'` (polars); the default
+readers fail with "schema mismatch" as soon as old and new files are mixed.
 """
 from __future__ import annotations
 
@@ -107,6 +111,9 @@ HEALTH = pa.schema(
         ("write_latency_ms", pa.float64()),
         ("bytes_raw", pa.int64()),
         ("bytes_parquet", pa.int64()),
+        # Added 2026-11-07 (A1). Older files lack these: read with union_by_name.
+        ("mirror_dropped", pa.int64()),  # outcome-1 rows not stored: exact mirror of outcome 0
+        ("mirror_kept", pa.int64()),  # outcome-1 rows stored because no mirror matched
     ]
 )
 
@@ -135,6 +142,9 @@ MARKETS = pa.schema(  # written by UniverseWatcher on every subscribe/unsubscrib
         ("rewards_max_spread", pa.float64()),
         ("rate_per_day", pa.float64()),
         ("accepting_orders", pa.bool_()),
+        # Added 2026-11-07 (A1): position in clobTokenIds. book_events stores
+        # outcome 0 in full; outcome 1 = mirror(outcome 0) except where it has rows.
+        ("outcome_index", pa.int32()),
     ]
 )
 

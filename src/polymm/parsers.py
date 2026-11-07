@@ -17,11 +17,12 @@ A frame may also be a JSON *list* of such messages.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 
 import orjson
 
-from .book import BookState
+from .book import BookState, flip_price, mirror
 from .sources import RECONNECT
 
 log = logging.getLogger(__name__)
@@ -38,7 +39,12 @@ class ParserStats:
     msgs_other: int = 0
     parse_errors: int = 0
     reconnects: int = 0
+    mirror_dropped: int = 0
+    mirror_kept: int = 0
     other_types: dict[str, int] = field(default_factory=dict)
+
+
+_OPPOSITE = {"BUY": "SELL", "SELL": "BUY"}
 
 
 def _f(x) -> float | None:
@@ -56,11 +62,24 @@ def _i(x, default=0) -> int:
 
 
 class MarketParser:
-    def __init__(self, books: dict[str, BookState], buffers: dict[str, list[tuple]], token_cond: dict[str, str]):
+    def __init__(
+        self,
+        books: dict[str, BookState],
+        buffers: dict[str, list[tuple]],
+        token_cond: dict[str, str],
+        token_pair: dict[str, tuple[str, int]] | None = None,
+    ):
         self.books = books
         self.buffers = buffers
         self.token_cond = token_cond  # asset_id -> condition_id (from UniverseWatcher)
+        # asset_id -> (sibling, outcome index), from UniverseWatcher. Empty = store everything.
+        self.token_pair = token_pair if token_pair is not None else {}
         self.stats = ParserStats()
+
+    def _secondary(self, aid: str) -> str | None:
+        """Sibling asset_id if `aid` is outcome 1 of a known pair, else None."""
+        pair = self.token_pair.get(aid)
+        return pair[0] if pair is not None and pair[1] == 1 else None
 
     def _book(self, asset_id: str) -> BookState:
         b = self.books.get(asset_id)
@@ -120,20 +139,50 @@ class MarketParser:
         ts_exch = _i(m.get("timestamp"))
         cond = m.get("market", "")
         buf = self.buffers["book_events"]
+        changes = []
         for ch in m.get("price_changes", ()):
-            aid = ch.get("asset_id", "")
-            side = ch.get("side", "")
             price = _f(ch.get("price"))
             size = _f(ch.get("size"))
-            h = ch.get("hash", "")
-            bb, ba = _f(ch.get("best_bid")), _f(ch.get("best_ask"))
             if price is None or size is None:
                 self.stats.parse_errors += 1
                 continue
-            buf.append((ts, ts_exch, aid, cond, "delta", None, side, price, size, h, bb, ba, None, conn))
+            changes.append((ch.get("asset_id", ""), ch.get("side", ""), price, size, ch.get("hash", ""),
+                            _f(ch.get("best_bid")), _f(ch.get("best_ask"))))
+
+        # Why (decision A1): one order shows up twice in a message, once per token
+        # (YES bid p == NO ask 1-p, same size). If the outcome-1 changes of this
+        # message are EXACTLY the mirror of the outcome-0 changes (as multisets:
+        # Counter, so duplicates must match too), they carry no information and are
+        # not stored. Otherwise all of them are stored, so research can rebuild
+        # outcome 1 per message: its own rows if present, else mirror(outcome 0).
+        implied: Counter = Counter()
+        actual: Counter = Counter()
+        for aid, side, price, size, *_ in changes:
+            pair = self.token_pair.get(aid)
+            if pair is None:
+                continue
+            if pair[1] == 0:
+                implied[(pair[0], _OPPOSITE.get(side, ""), flip_price(price), size)] += 1
+            else:
+                actual[(aid, side, round(price, 9), size)] += 1
+        mirrored = implied == actual
+        if not mirrored:
+            # Also counts outcome-0 changes with no outcome-1 twin: that case can't be
+            # stored (there is no row to keep), so it must at least be visible in health.
+            self.stats.mirror_kept += max(1, (implied - actual).total())
+
+        for aid, side, price, size, h, bb, ba in changes:
+            # In-memory books always get both tokens: the REST gap check and
+            # check_tob compare per token.
             b = self._book(aid)
             b.apply_delta(side, price, size, h, ts_exch)
             b.check_tob(bb, ba)
+            if self._secondary(aid) is not None:
+                if mirrored:
+                    self.stats.mirror_dropped += 1
+                    continue
+                self.stats.mirror_kept += 1
+            buf.append((ts, ts_exch, aid, cond, "delta", None, side, price, size, h, bb, ba, None, conn))
             self.stats.rows_delta += 1
 
     def _book_snapshot(self, ts: int, conn: int, m: dict) -> None:
@@ -149,7 +198,16 @@ class MarketParser:
         self._book(aid).apply_snapshot(bids, asks, h, ts_exch)
 
     def emit_snapshot(self, ts, ts_exch, aid, cond, kind, bids, asks, h, tick, conn) -> None:
-        """Shared by WS `book` and the REST poller. snapshot_id = ts_recv_ns (unique per snapshot)."""
+        """Shared by WS `book` and the REST poller. snapshot_id = ts_recv_ns (unique per snapshot).
+
+        Must be called BEFORE the snapshot is applied to the in-memory book: an
+        outcome-1 snapshot is compared with the sibling's book as it stands now."""
+        sib = self._secondary(aid)
+        if sib is not None and self._redundant_snapshot(aid, sib, bids, asks):
+            self.stats.mirror_dropped += len(bids) + len(asks)
+            return
+        if sib is not None:
+            self.stats.mirror_kept += max(1, len(bids) + len(asks))
         buf = self.buffers["book_events"]
         if not bids and not asks:
             buf.append((ts, ts_exch, aid, cond, kind, ts, None, None, None, h, None, None, tick, conn))
@@ -158,6 +216,30 @@ class MarketParser:
             buf.append((ts, ts_exch, aid, cond, kind, ts, "BUY", p, s, h, None, None, tick, conn))
         for p, s in asks:
             buf.append((ts, ts_exch, aid, cond, kind, ts, "SELL", p, s, h, None, None, tick, conn))
+
+    def _redundant_snapshot(self, aid: str, sib: str, bids: list[tuple], asks: list[tuple]) -> bool:
+        """True if this outcome-1 snapshot changes nothing: it equals the token's current
+        book AND that book equals mirror(sibling). Both are needed. Matching the mirror
+        alone is not enough: on 2026-11-06 the server's NO book briefly differed from
+        mirror(YES) at ~0.03% of checks, and a snapshot that resyncs such a NO book is
+        a real change that research must see."""
+        own, other = self.books.get(aid), self.books.get(sib)
+        if own is None or other is None or not (other.bids or other.asks):
+            return False  # first snapshot of a token, or nothing to derive from: store it
+        m_bids, m_asks = mirror(other.bids, other.asks)
+        if own.bids != m_bids or own.asks != m_asks:
+            return False
+
+        def as_dict(levels: list[tuple]) -> dict | None:
+            out = {}
+            for p, s in levels:
+                if p is None or s is None:
+                    return None  # unparsable level: never drop, let the row show it
+                if s > 0:
+                    out[round(p, 9)] = s
+            return out
+
+        return as_dict(bids) == m_bids and as_dict(asks) == m_asks
 
     def _trade(self, ts: int, conn: int, m: dict) -> None:
         self.stats.msgs_trade += 1

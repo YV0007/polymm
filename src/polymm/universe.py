@@ -27,6 +27,10 @@ class UniverseWatcher:
         self.rest = rest
         self.markets: dict[str, MarketInfo] = {}  # condition_id -> info (currently subscribed)
         self.token_cond: dict[str, str] = {}  # asset_id -> condition_id
+        # asset_id -> (sibling asset_id, outcome index). Index 0 (Yes / Up) is the
+        # token whose book rows we store; index 1 is stored only where it is NOT
+        # the exact mirror of index 0 (see MarketParser, decision A1).
+        self.token_pair: dict[str, tuple[str, int]] = {}
         self._missing: dict[str, float] = {}  # slug -> last time Gamma had nothing (retry later)
         self._last_refresh_rows_ts = 0.0
 
@@ -89,6 +93,10 @@ class UniverseWatcher:
                 self.markets[mi.condition_id] = mi
                 for aid, _ in mi.tokens:
                     self.token_cond[aid] = mi.condition_id
+                if len(mi.tokens) == 2:
+                    (a0, _), (a1, _) = mi.tokens
+                    self.token_pair[a0] = (a1, 0)
+                    self.token_pair[a1] = (a0, 1)
                 added.append(mi)
 
         removed: list[MarketInfo] = []
@@ -98,6 +106,7 @@ class UniverseWatcher:
                 del self.markets[cid]
                 for aid, _ in mi.tokens:
                     self.token_cond.pop(aid, None)
+                    self.token_pair.pop(aid, None)
 
         if added:
             log.info("universe +%d markets: %s", len(added), ", ".join(m.market_slug for m in added)[:300])
@@ -115,13 +124,13 @@ class UniverseWatcher:
         ts_ns = ts_ns or time.time_ns()
         out = []
         for mi in markets:
-            for aid, outcome in mi.tokens:
+            for idx, (aid, outcome) in enumerate(mi.tokens):
                 out.append(
                     (
                         ts_ns, action, mi.family, mi.event_slug, mi.market_slug, mi.question, mi.condition_id,
                         aid, outcome, mi.start_date, mi.end_date, mi.tick_size, mi.min_order_size, mi.neg_risk,
                         mi.fees_enabled, mi.fee_rate, mi.fee_rebate_rate, mi.rewards_min_size,
-                        mi.rewards_max_spread, mi.rate_per_day, mi.accepting_orders,
+                        mi.rewards_max_spread, mi.rate_per_day, mi.accepting_orders, idx,
                     )
                 )
         return out

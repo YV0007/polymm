@@ -37,7 +37,7 @@ class Recorder:
         self.books: dict[str, BookState] = {}
         self.parquet = ParquetSink(cfg.data_dir)
         self.raw = RawSink(cfg.data_dir, level=rs.raw_zstd_level, rotate_minutes=rs.raw_rotate_minutes)
-        self.parser = MarketParser(self.books, self.parquet.buffers, self.universe.token_cond)
+        self.parser = MarketParser(self.books, self.parquet.buffers, self.universe.token_cond, self.universe.token_pair)
         self.source = WsSource(cfg.endpoints.ws_market, self.queue, rs.ping_interval_s, rs.custom_feature_enabled)
         self.poller = RestPoller(
             self.rest, self.books, self.parser, self.universe.token_cond, rs.rest_poll_interval_s, rs.rest_anchor_interval_s
@@ -177,16 +177,17 @@ class Recorder:
                 s.msgs_total, s.msgs_book, s.msgs_delta, s.rows_delta, s.msgs_trade, s.msgs_tob, s.msgs_other,
                 s.parse_errors, self.source.reconnects, self.poller.gaps, tob_mm, self.poller.polls,
                 self.queue.qsize(), self.queue_max_seen, self.last_write_latency_ms,
-                self.raw.bytes_written, self.parquet.bytes_written,
+                self.raw.bytes_written, self.parquet.bytes_written, s.mirror_dropped, s.mirror_kept,
             )
             self.parquet.buffers["health"].append(row)
             log.info(
                 "conn=%d sub=%d msgs=%d (book=%d delta=%d/%drows trade=%d tob=%d other=%d err=%d) "
-                "reconn=%d gaps=%d races=%d tobmm=%d polls=%d q=%d/%d wlat=%.0fms raw=%.1fMB pq=%.1fMB",
+                "reconn=%d gaps=%d races=%d tobmm=%d polls=%d q=%d/%d wlat=%.0fms raw=%.1fMB pq=%.1fMB mirror=%d dropped/%d kept",
                 self.source.conn_id, len(self.source.subscribed), s.msgs_total, s.msgs_book, s.msgs_delta,
                 s.rows_delta, s.msgs_trade, s.msgs_tob, s.msgs_other, s.parse_errors, self.source.reconnects,
                 self.poller.gaps, self.poller.races, tob_mm, self.poller.polls, self.queue.qsize(), self.queue_max_seen,
                 self.last_write_latency_ms, self.raw.bytes_written / 1e6, self.parquet.bytes_written / 1e6,
+                s.mirror_dropped, s.mirror_kept,
             )
             if self.parquet.pending_rows() >= rs.flush_max_rows:
                 asyncio.create_task(self._flush())

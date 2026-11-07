@@ -280,7 +280,7 @@ Partitioning is `dt=/hour=`; `asset_id` is a column (≈80 tokens × 30 s flushe
 | book_events + tob parquet (zstd) | ~55 KB/s | ~5 GB | ~150 GB |
 | trades, health, reference | — | < 50 MB | — |
 
-The BTC 15m market alone is ~480 deltas/s per side; it is bot-requoted continuously. The laptop has ~108 GB free, so this is **~10 days of headroom**, not months. Levers, in order: (1) every delta is mirrored exactly on the sibling token in the same frame (verified) — store one side per market and derive the other → halves `book_events`; (2) nightly offline recompress of raw at zstd-19 (`polymm compact`) and drop raw for validated days; (3) VPS with a bigger disk / object storage.
+The BTC 15m market alone is ~480 deltas/s per side; it is bot-requoted continuously. The laptop has ~108 GB free, so this is **~10 days of headroom**, not months. Levers, in order: (1) every delta is mirrored exactly on the sibling token in the same frame (verified) — store one side per market and derive the other → halves `book_events` (**done 2026-11-07, see §5 A1**); (2) nightly offline recompress of raw at zstd-19 (`polymm compact`) and drop raw for validated days; (3) VPS with a bigger disk / object storage.
 
 ### 3.5 Tooling
 
@@ -319,4 +319,10 @@ The BTC 15m market alone is ~480 deltas/s per side; it is bot-requoted continuou
 - **Server-side `best_bid/best_ask` on deltas disagree with the reconstructed book in ~0.4% of frames**, while the reconstructed book is exact against snapshots. Treat the reconstructed book as truth; the fields are stored for reference.
 - **"Slow consumer" disconnects** happen if the WS reader is starved for ~1 s. Fixed by yielding in the consumer every 20 messages and `max_queue=4096` on the websockets client.
 - **Volume** is far above the first estimate (see §3.4); storage decisions needed within ~10 days.
+- **A1, one token per market in `book_events` (live from 2026-11-07).** Outcome 0 (`outcome_index` in `markets`; Yes / Up) is stored in full. Outcome 1 rows are stored only where they are not redundant:
+  - a `price_change` message's outcome-1 deltas are dropped iff they are exactly the mirror (side flipped, price `1 − p`, same size) of its outcome-0 deltas;
+  - an outcome-1 snapshot is dropped iff it equals both the token's current book and mirror(outcome 0), i.e. it changes nothing. (Matching the mirror alone is not enough: the server's NO book briefly differs from mirror(YES) at ~0.03% of checks, and a snapshot that resyncs it is a real change.)
+  - **Rebuild rule for research:** outcome 1 = replay of its own stored snapshots + per delta message its own stored rows if any, else mirror(outcome-0 rows of that message). Use `book.flip_price` / `book.mirror` (floats: `1 − 0.57 ≠ 0.43` without rounding).
+  - Verified on 1 h of raw frames (2026-11-06 15:00, 3.58 M frames): 49.9% fewer rows (deltas −50.0%, ws snapshots −48.9%); books rebuilt from stored rows matched the full books in 6,201,126 / 6,201,126 checks. Health columns `mirror_dropped` / `mirror_kept` watch it live; the audit prints them.
+  - Schema rule that came with it: columns are only ever added at the end; readers use `union_by_name` (see `records.py`).
 - Still open: Austria geo-restriction (Phase 6); whether `fee_rate_bps` on trades is per-order or per-market.

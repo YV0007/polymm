@@ -15,6 +15,25 @@ from collections import deque
 from dataclasses import dataclass, field
 
 
+def flip_price(p: float) -> float:
+    """The sibling token's price for the same order: YES at p is NO at 1 - p.
+
+    Why round: 1 - 0.57 == 0.43000000000000005 in binary floats. Rounding to 9
+    decimals lands on exactly the float that parsing "0.43" gives, so mirrored
+    prices compare equal to (and can share dict keys with) parsed ones.
+    """
+    return round(1.0 - p, 9)
+
+
+def mirror(bids: dict[float, float], asks: dict[float, float]) -> tuple[dict[float, float], dict[float, float]]:
+    """Book of the sibling token: this token's asks become its bids and vice versa.
+
+    Used live (is an incoming NO update just the mirror of YES? then don't store it)
+    and in research (rebuild the NO book from stored YES rows).
+    """
+    return {flip_price(p): s for p, s in asks.items()}, {flip_price(p): s for p, s in bids.items()}
+
+
 @dataclass(slots=True)
 class BookState:
     asset_id: str

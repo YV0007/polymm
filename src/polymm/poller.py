@@ -125,6 +125,10 @@ class RestPoller:
                 self.parser._book(aid)  # creates it
             local = self.books[aid]
             ts_exch = int(b.get("timestamp") or 0)
+            # Why emit before reset: the parser decides whether an outcome-1 snapshot
+            # is redundant by comparing it with the book as it stands BEFORE it lands.
+            self._emit(b, ts_recv)
+            self.last_anchor[aid] = time.time()
             if ts_exch and ts_exch < local.last_ts_exch_ms:
                 # REST answer is older than our newest delta: cannot judge; keep ours.
                 self.stale_rest += 1
@@ -134,8 +138,6 @@ class RestPoller:
                          aid[:10], b.get("hash", "")[:8], self.confirm_delay_s)
                 bids, asks = _levels(b)
                 local.apply_snapshot(bids, asks, b.get("hash", ""), ts_exch)
-            self._emit(b, ts_recv)
-            self.last_anchor[aid] = time.time()
 
     def _emit(self, b: dict, ts_recv: int) -> None:
         aid = b.get("asset_id", "")
