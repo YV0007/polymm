@@ -4,8 +4,9 @@
 #   ops/launchd.sh stop      SIGTERM -> clean flush, then unload (no auto-restart)
 #   ops/launchd.sh start     load again
 #   ops/launchd.sh status
+# Second argument picks the agent: com.polymm.recorder (default) | com.polymm.nightly-pull
 set -e
-LABEL=com.polymm.recorder
+LABEL=${2:-com.polymm.recorder}
 SRC="$(cd "$(dirname "$0")" && pwd)/$LABEL.plist"
 DST="$HOME/Library/LaunchAgents/$LABEL.plist"
 case "$1" in
@@ -13,5 +14,5 @@ case "$1" in
   start)   launchctl bootstrap "gui/$(id -u)" "$DST" 2>/dev/null || launchctl load "$DST"; echo "started";;
   stop)    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || launchctl unload "$DST"; echo "stopped (clean flush on SIGTERM)";;
   status)  launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | grep -E "state|pid|last exit" || echo "not loaded"; tail -n 3 "$(dirname "$SRC")/../logs/recorder.log" 2>/dev/null;;
-  *) echo "usage: $0 install|start|stop|status"; exit 1;;
+  *) echo "usage: $0 install|start|stop|status [label]"; exit 1;;
 esac

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.polymm.nightly-pull</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string>
+    <string>/Users/macbook/Desktop/POLY MM/ops/nightly_pull.sh</string>
+  </array>
+  <!-- Why StartCalendarInterval: runs at local midnight (this Mac is Europe/Vienna);
+       a run missed while the lid was closed fires at the next wake. -->
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>0</integer><key>Minute</key><integer>0</integer></dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string></dict>
+  <key>StandardOutPath</key><string>/Users/macbook/Desktop/POLY MM/logs/nightly_pull.launchd.log</string>
+  <key>StandardErrorPath</key><string>/Users/macbook/Desktop/POLY MM/logs/nightly_pull.launchd.log</string>
+</dict></plist>
