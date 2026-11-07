@@ -1,4 +1,4 @@
-"""Command line: `polymm universe | record | audit | backfill | backfill-spot | replay | quality`."""
+"""Command line: `polymm universe | record | audit | backfill | backfill-spot | replay | quality | shape`."""
 from __future__ import annotations
 
 import argparse
@@ -148,6 +148,29 @@ def cmd_quality(args) -> int:
     return 0
 
 
+def cmd_shape(args) -> int:
+    from datetime import datetime, timedelta, timezone
+
+    from .replay import NS, parse_ts
+    from .shape import ShapeConfig, run_shape
+
+    cfg = load_config(args.config)
+    data_dir = Path(args.data) if args.data else cfg.data_dir
+    day = datetime.strptime(args.date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    t0 = parse_ts(args.t0) if args.t0 else int(day.timestamp() * NS)
+    t1 = parse_ts(args.t1) if args.t1 else int((day + timedelta(days=1)).timestamp() * NS)
+    # Why reports/<date>/shape by default: next to the quality report and the
+    # strict windows it reads, one folder per day.
+    qdir = Path(args.quality_dir) if args.quality_dir else Path("reports") / args.date
+    out = Path(args.out) if args.out else qdir / "shape"
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+    sc = ShapeConfig(date=args.date, data_dir=data_dir, out_dir=out, quality_dir=qdir,
+                     replay_out=Path(args.replay_out) if args.replay_out else None, t0=t0, t1=t1)
+    T = run_shape(sc)
+    print(f"shape {args.date}: {len(T)} tables; report: {out / 'shape.md'}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="polymm")
     p.add_argument("-c", "--config", default="config.yaml")
@@ -178,12 +201,21 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--out", default=None, help="report folder (default: reports/<date>)")
     q.add_argument("--t0", default=None, help="start, ISO UTC or ns (default: start of --date)")
     q.add_argument("--t1", default=None, help="end (exclusive), ISO UTC or ns (default: end of --date)")
+    sh = sub.add_parser("shape", help="stage 2 stylized facts per family (spread, depth, queue, flow, trades, jumps) inside strict clean windows")
+    sh.add_argument("--date", required=True, help="YYYY-MM-DD (UTC day)")
+    sh.add_argument("--data", default=None, help="dataset root (default: paths.data_dir from config)")
+    sh.add_argument("--replay-out", default=None, help="replay output root with <dir>/derived (default: <quality-dir>/replay)")
+    sh.add_argument("--quality-dir", default=None, help="folder holding clean_windows_strict.parquet (default: reports/<date>)")
+    sh.add_argument("--out", default=None, help="report folder (default: <quality-dir>/shape)")
+    sh.add_argument("--t0", default=None, help="start, ISO UTC or ns (default: start of --date)")
+    sh.add_argument("--t1", default=None, help="end (exclusive), ISO UTC or ns (default: end of --date)")
     args = p.parse_args(argv)
     if args.cmd == "replay" and not args.validate_only and not args.out:
         p.error("replay: --out is required unless --validate-only")
     return {
         "universe": cmd_universe, "record": cmd_record, "audit": cmd_audit,
         "backfill": cmd_backfill, "backfill-spot": cmd_backfill_spot, "replay": cmd_replay, "quality": cmd_quality,
+        "shape": cmd_shape,
     }[args.cmd](args)
 
 
