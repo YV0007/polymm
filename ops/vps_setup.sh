@@ -17,13 +17,16 @@ id polymm >/dev/null 2>&1 || useradd -m -s /bin/bash polymm
 install -d -m 700 -o polymm -g polymm /home/polymm/.ssh
 cp /root/.ssh/authorized_keys /home/polymm/.ssh/authorized_keys
 chown polymm:polymm /home/polymm/.ssh/authorized_keys
-# Why: Hetzner images allow root password login until a key exists; make it key-only.
-sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+# Why a drop-in: sshd takes the first value it reads and sshd_config.d/ is read
+# before the main file, so editing sshd_config alone can be silently overridden.
+printf 'PasswordAuthentication no\nPermitRootLogin prohibit-password\n' > /etc/ssh/sshd_config.d/00-polymm.conf
 systemctl reload ssh || systemctl reload sshd
 
 # ---- data on the attached Volume ---------------------------------------------------
 VOL=$(ls -d /mnt/HC_Volume_* 2>/dev/null | head -1 || true)
 if [ -n "$VOL" ]; then
+  # Why: a Volume resized in the console grows the disk, not the filesystem.
+  resize2fs "$(findmnt -n -o SOURCE "$VOL")" >/dev/null 2>&1 || true
   install -d -o polymm -g polymm "$VOL/polymm-data" "$VOL/polymm-logs"
   # Why symlinks: config.yaml stays identical to the laptop's (data/, logs/).
   ln -sfn "$VOL/polymm-data" /home/polymm/polymm/data
