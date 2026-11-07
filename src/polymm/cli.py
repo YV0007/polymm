@@ -100,7 +100,7 @@ def cmd_replay(args) -> int:
                       chunk_s=args.chunk_s)
     rp = Replayer(rc)
     stats = rp.run()
-    print(validation_report(rp.rest_checks_all, stats, ws_mismatches=rp.ws_mismatches))
+    print(validation_report(rp.rest_checks_all, stats, ws_mismatches=rp.ws_mismatches, ws_lags=rp.ws_lags))
     if out is not None:
         print(f"derived tables written under {out / 'derived'}")
     return 0

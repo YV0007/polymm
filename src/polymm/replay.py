@@ -115,8 +115,8 @@ CLEAN_WINDOWS = pa.schema(
         ("t_start", pa.int64()),
         ("t_end", pa.int64()),
         ("start_kind", pa.string()),  # snapshot_ws | snapshot_rest | rest_resync
-        ("end_reason", pa.string()),  # reconnect | rest_gap | end
-        ("last_verified", pa.int64()),  # ts of the last REST check that matched inside the window
+        ("end_reason", pa.string()),  # reconnect | rest_gap | ws_gap | end
+        ("last_verified", pa.int64()),  # ts of the last REST or WS snapshot that matched inside the window
         ("n_events", pa.int64()),
     ]
 )
@@ -388,6 +388,7 @@ class Replayer:
         self._reset_buffers()
         self.rest_checks_all: list[tuple] = []
         self.ws_mismatches: list[tuple] = []  # (ts, asset_id, family, n_ws_levels, n_diff)
+        self.ws_lags: list[int] = []  # WS snapshot matched an earlier state: state ts - snapshot ts
         self.stats = {"rows": 0, "deltas": 0, "snapshots_ws": 0, "snapshots_rest": 0, "reconnects": 0,
                       "mirrored_deltas": 0, "resyncs": 0, "loop_s": 0.0, "read_s": 0.0, "write_s": 0.0}
         self._seq = 0
@@ -491,12 +492,12 @@ class Replayer:
         a.best_bid = max(a.book.bids) if a.book.bids else None
         a.best_ask = min(a.book.asks) if a.book.asks else None
         a.history.append((ts, hash_, a.fp))
-        if not a.initialised or a.stale:
-            a.initialised = True
-            a.stale = False
+        a.initialised = True
+        a.stale = False
+        if a.win_start is None:  # first snapshot, after a reconnect, or after a confirmed gap
             a.open_window(ts, kind)
-            if a.next_grid is None:
-                a.next_grid = -(-ts // NS) * NS
+        if a.next_grid is None:
+            a.next_grid = -(-ts // NS) * NS
         a.win_events += 1
 
     def _trim(self, a: _Asset, ts: int) -> None:
@@ -756,19 +757,32 @@ class Replayer:
             self._grid_catch_up(a, ts)
 
     def _ws_snapshot(self, a: _Asset, ts: int, bids: list, asks: list, hash_: str, ts_exch: int) -> None:
+        """Apply a WS `book` snapshot; first use it as a witness. Why also cut
+        windows here: a delta dropped between two REST polls can be healed by a
+        spontaneous WS snapshot before the poller ever sees it. The REST check
+        would then report a clean hour while a stretch of it was wrong."""
         if a.initialised and not a.stale:
-            # Secondary validation: a WS snapshot should equal the replayed book exactly.
             sb = {p: s for p, s in bids if s > 0}
             sa = {p: s for p, s in asks if s > 0}
             if a.book.bids == sb and a.book.asks == sa:
                 a.ws_exact += 1
-            elif self._matches_before(a, ts, hash_, _fingerprint(sb, sa)) is not None:
-                a.ws_before += 1
+                a.last_verified = ts
             else:
-                a.ws_mismatch += 1
-                nd = sum(1 for k, v in sb.items() if a.book.bids.get(k) != v) + sum(1 for k in a.book.bids if k not in sb) \
-                    + sum(1 for k, v in sa.items() if a.book.asks.get(k) != v) + sum(1 for k in a.book.asks if k not in sa)
-                self.ws_mismatches.append((ts, a.asset_id, a.family, len(sb) + len(sa), nd))
+                mts = self._matches_before(a, ts, hash_, _fingerprint(sb, sa))
+                if mts is not None:
+                    a.ws_before += 1
+                    a.last_verified = ts
+                    self.ws_lags.append(mts - ts)
+                else:
+                    a.ws_mismatch += 1
+                    nd = sum(1 for k, v in sb.items() if a.book.bids.get(k) != v) + sum(1 for k in a.book.bids if k not in sb) \
+                        + sum(1 for k, v in sa.items() if a.book.asks.get(k) != v) + sum(1 for k in a.book.asks if k not in sa)
+                    self.ws_mismatches.append((ts, a.asset_id, a.family, len(sb) + len(sa), nd))
+                    # Why end at the last applied event: on 2026-11-06 every such
+                    # mismatch sat in a burst of `book` snapshots for all tokens after
+                    # ~9 s of stream silence (a stall whose deltas never arrived). The
+                    # book was last known good when its last delta landed.
+                    a.close_window(a.last_event_ts, "ws_gap")
         self._apply_snapshot(a, ts, "snapshot_ws", bids, asks, hash_, ts_exch)
 
     # -- chunk driver ------------------------------------------------------------------------
@@ -1011,7 +1025,7 @@ def book_at(data_dir: Path, asset_id: str, t: int, index: MarketIndex | None = N
 
 
 def validation_report(checks: list[tuple], stats: dict | None = None, mismatch_limit: int = 50,
-                      ws_mismatches: list[tuple] | None = None) -> str:
+                      ws_mismatches: list[tuple] | None = None, ws_lags: list[int] | None = None) -> str:
     """Text report over rest_checks rows (tuples in REST_CHECKS column order)."""
     if not checks:
         return "no REST snapshots in the window\n"
@@ -1045,6 +1059,10 @@ def validation_report(checks: list[tuple], stats: dict | None = None, mismatch_l
     if stats:
         lines.append("\nstream self-check (WS snapshots vs replayed book): "
                      f"exact={stats.get('ws_exact', 0)} within-window={stats.get('ws_before', 0)} mismatch={stats.get('ws_mismatch', 0)}")
+        if ws_lags:
+            ql = pl.Series(ws_lags).quantile
+            lines.append(f"  ws snapshots older than the book: lag p50={ql(0.5) / 1e6:.0f} ms p95={ql(0.95) / 1e6:.0f} ms "
+                         f"min={min(ws_lags) / 1e6:.0f} ms")
         for ts, aid, fam, nl, nd in (ws_mismatches or [])[:mismatch_limit]:
             lines.append(f"  ws mismatch {datetime.fromtimestamp(ts / 1e9, tz=timezone.utc):%H:%M:%S.%f} {fam:<16} {aid[:10]}… "
                          f"{nl} WS levels, {nd} differ")

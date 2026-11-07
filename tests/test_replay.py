@@ -251,6 +251,21 @@ def test_rest_before_first_snapshot_is_anchor(tmp_path):
     assert derived(tmp_path, "clean_windows", YES)["start_kind"].item() == "snapshot_rest"
 
 
+def test_ws_snapshot_mismatch_cuts_window(tmp_path):
+    ev = snap(T0, YES, [(0.50, 10)], [(0.52, 5)], "h0")
+    ev += delta(T0 + 1 * NS, YES, "BUY", 0.50, 11, "h1")
+    ev += snap(T0 + 10 * NS, YES, [(0.50, 11), (0.40, 3)], [(0.52, 5)], "h2")  # level we never saw: deltas were lost
+    ev += delta(T0 + 11 * NS, YES, "BUY", 0.50, 12, "h3")
+    write_dataset(tmp_path, ev)
+    rp, stats = run(tmp_path)
+    assert stats["ws_mismatch"] == 1 and rp.ws_mismatches[0][4] == 1
+    win = derived(tmp_path, "clean_windows", YES).sort("t_start")
+    assert win["end_reason"].to_list() == ["ws_gap", "end"]
+    assert win["t_end"].to_list()[0] == T0 + 1 * NS  # ends at the last applied event, not at the snapshot
+    assert win["t_start"].to_list()[1] == T0 + 10 * NS and win["start_kind"].to_list()[1] == "snapshot_ws"
+    assert rp.assets[YES].book.bids == {0.50: 12, 0.40: 3}
+
+
 # ---- tests: fill / cancel labelling -----------------------------------------------------------
 
 
