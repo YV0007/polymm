@@ -1,0 +1,47 @@
+#!/bin/bash
+# One-time server setup. Run ON the VPS as root, after ops/deploy.sh copied the repo:
+#   ssh root@<ip> 'bash /home/polymm/polymm/ops/vps_setup.sh'
+# Idempotent: safe to run again.
+set -euo pipefail
+
+# ---- OS basics -------------------------------------------------------------------
+timedatectl set-timezone UTC
+apt-get update -qq
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq chrony unattended-upgrades rsync curl
+# Why chrony: ts_recv_ns is our clock; latency = ts_recv - ts_exch is only
+# meaningful if the server clock is disciplined to ms level.
+systemctl enable --now chrony
+
+# ---- service user (no password, key login only) ------------------------------------
+id polymm >/dev/null 2>&1 || useradd -m -s /bin/bash polymm
+install -d -m 700 -o polymm -g polymm /home/polymm/.ssh
+cp /root/.ssh/authorized_keys /home/polymm/.ssh/authorized_keys
+chown polymm:polymm /home/polymm/.ssh/authorized_keys
+# Why: Hetzner images allow root password login until a key exists; make it key-only.
+sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+systemctl reload ssh || systemctl reload sshd
+
+# ---- data on the attached Volume ---------------------------------------------------
+VOL=$(ls -d /mnt/HC_Volume_* 2>/dev/null | head -1 || true)
+if [ -n "$VOL" ]; then
+  install -d -o polymm -g polymm "$VOL/polymm-data" "$VOL/polymm-logs"
+  # Why symlinks: config.yaml stays identical to the laptop's (data/, logs/).
+  ln -sfn "$VOL/polymm-data" /home/polymm/polymm/data
+  ln -sfn "$VOL/polymm-logs" /home/polymm/polymm/logs
+  echo "data -> $VOL/polymm-data"
+else
+  echo "WARNING: no Hetzner Volume mounted; data stays on the root disk"
+fi
+chown -R polymm:polymm /home/polymm/polymm
+
+# ---- python env via uv -------------------------------------------------------------
+sudo -u polymm bash -lc 'command -v ~/.local/bin/uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh'
+sudo -u polymm bash -lc 'cd ~/polymm && ~/.local/bin/uv sync --frozen'
+
+# ---- service -----------------------------------------------------------------------
+cp /home/polymm/polymm/ops/polymm.service /etc/systemd/system/polymm.service
+systemctl daemon-reload
+systemctl enable --now polymm
+sleep 15
+systemctl --no-pager status polymm | head -5
+tail -n 2 /home/polymm/polymm/logs/recorder.log || true

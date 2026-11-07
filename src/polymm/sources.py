@@ -47,7 +47,13 @@ class WsSource:
             return  # next connect() sends the full set
         try:
             if add:
-                await ws.send(orjson.dumps({"assets_ids": sorted(add), "type": "market", "operation": "subscribe"}).decode())
+                op = {"assets_ids": sorted(add), "type": "market", "operation": "subscribe"}
+                # Why: a subscribe op without this flag switches custom features
+                # (best_bid_ask, new_market, market_resolved) off for the whole
+                # connection; verified 2026-11-06, the feed died at every 15m roll.
+                if self.custom_feature:
+                    op["custom_feature_enabled"] = True
+                await ws.send(orjson.dumps(op).decode())
             if rem:
                 await ws.send(orjson.dumps({"assets_ids": sorted(rem), "type": "market", "operation": "unsubscribe"}).decode())
         except Exception as e:

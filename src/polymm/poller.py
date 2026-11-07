@@ -6,9 +6,10 @@ from inside the stream. The REST book is an independent witness.
 Sync test (robust to the race between the REST read and in-flight deltas):
   in_sync  = REST hash is among the last K hashes we applied
              OR REST levels equal our levels exactly.
-Gap       = not in_sync. Then: count it, replace our book with REST (only if
-            the REST timestamp is not older than our last applied delta), and
-            emit a `snapshot_rest` so replay has a clean restart point.
+Gap       = still not in_sync after `confirm_delay_s` AND against a fresh REST
+            read. Then: count it, replace our book with the fresh REST book (only
+            if its timestamp is not older than our last applied delta), and emit a
+            `snapshot_rest` so replay has a clean restart point.
 Anchor    = even when in sync, emit a `snapshot_rest` every `anchor_interval`
             so replay never has to walk back more than that.
 """
@@ -25,8 +26,10 @@ from .rest import PolyRest
 log = logging.getLogger(__name__)
 
 
-def _f(x) -> float:
-    return float(x)
+def _levels(b: dict) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    bids = [(float(l["price"]), float(l["size"])) for l in b.get("bids", ())]
+    asks = [(float(l["price"]), float(l["size"])) for l in b.get("asks", ())]
+    return bids, asks
 
 
 class RestPoller:
@@ -38,6 +41,7 @@ class RestPoller:
         token_cond: dict[str, str],
         interval_s: float,
         anchor_interval_s: float,
+        confirm_delay_s: float = 2.0,
     ):
         self.rest = rest
         self.books = books
@@ -49,6 +53,8 @@ class RestPoller:
         self.polls = 0
         self.gaps = 0
         self.stale_rest = 0
+        self.races = 0  # mismatches that resolved themselves on the second look
+        self.confirm_delay_s = confirm_delay_s
         self._stop = asyncio.Event()
 
     def stop(self) -> None:
@@ -68,37 +74,72 @@ class RestPoller:
             self.polls += 1
             now = time.time()
             ts_recv = time.time_ns()
+            suspects: list[dict] = []
             for b in resp:
                 aid = b.get("asset_id", "")
-                h = b.get("hash", "")
-                ts_exch = int(b.get("timestamp") or 0)
-                bids = [(_f(l["price"]), _f(l["size"])) for l in b.get("bids", ())]
-                asks = [(_f(l["price"]), _f(l["size"])) for l in b.get("asks", ())]
-                tick = float(b["tick_size"]) if b.get("tick_size") else None
-                cond = b.get("market", "") or self.token_cond.get(aid, "")
-                local = self.books.get(aid)
+                if self._in_sync(b):
+                    if now - self.last_anchor.get(aid, 0.0) >= self.anchor_interval_s:
+                        self._emit(b, ts_recv)
+                        self.last_anchor[aid] = now
+                else:
+                    suspects.append(b)
+            if suspects:
+                await self._confirm(suspects)
 
-                in_sync = False
-                if local is not None:
-                    if h and h in local.recent_hashes:
-                        in_sync = True
-                    elif local.bids == {p: s for p, s in bids if s > 0} and local.asks == {p: s for p, s in asks if s > 0}:
-                        in_sync = True
+    def _in_sync(self, b: dict) -> bool:
+        local = self.books.get(b.get("asset_id", ""))
+        if local is None:
+            return False
+        h = b.get("hash", "")
+        if h and h in local.recent_hashes:
+            return True
+        bids, asks = _levels(b)
+        return local.bids == {p: s for p, s in bids if s > 0} and local.asks == {p: s for p, s in asks if s > 0}
 
-                anchor_due = now - self.last_anchor.get(aid, 0.0) >= self.anchor_interval_s
-                if in_sync and not anchor_due:
-                    continue
-                if not in_sync:
-                    self.gaps += 1
-                    if local is None:
-                        self.parser._book(aid)  # creates it
-                        local = self.books[aid]
-                    if ts_exch and ts_exch < local.last_ts_exch_ms:
-                        # REST answer is older than our newest delta: cannot judge; keep ours.
-                        self.stale_rest += 1
-                        log.info("rest older than local for %s… (rest=%d local=%d), not resetting", aid[:10], ts_exch, local.last_ts_exch_ms)
-                    else:
-                        log.info("gap detected for %s… (rest hash %s not in recent history); resetting book", aid[:10], h[:8])
-                        local.apply_snapshot(bids, asks, h, ts_exch)
-                self.parser.emit_snapshot(ts_recv, ts_exch, aid, cond, "snapshot_rest", bids, asks, h, tick, 0)
-                self.last_anchor[aid] = now
+    async def _confirm(self, suspects: list[dict]) -> None:
+        """Why a second look: a mismatch is usually a race, not a gap. Measured on
+        2026-11-06: of 3,561 checks, 656 mismatched only because the REST state was
+        still in our queue (REST behind by ~30 ms) or not yet on the wire (REST
+        ahead by ~95 ms); only ~20 never appeared in the stream. Resetting on a
+        race is harmful: queued older deltas then land on top of a newer snapshot.
+        So: wait, re-check against what we have applied since, and only for books
+        that still disagree fetch a *fresh* REST copy and reset from that."""
+        await asyncio.sleep(self.confirm_delay_s)
+        still = [b for b in suspects if not self._in_sync(b)]
+        self.races += len(suspects) - len(still)
+        if not still:
+            return
+        try:
+            fresh = await self.rest.books([b["asset_id"] for b in still])
+        except Exception as e:
+            log.warning("REST /books (confirm) failed: %r", e)
+            return
+        ts_recv = time.time_ns()
+        for b in fresh:
+            if self._in_sync(b):
+                self.races += 1
+                continue
+            aid = b.get("asset_id", "")
+            self.gaps += 1
+            if aid not in self.books:
+                self.parser._book(aid)  # creates it
+            local = self.books[aid]
+            ts_exch = int(b.get("timestamp") or 0)
+            if ts_exch and ts_exch < local.last_ts_exch_ms:
+                # REST answer is older than our newest delta: cannot judge; keep ours.
+                self.stale_rest += 1
+                log.info("rest older than local for %s… (rest=%d local=%d), not resetting", aid[:10], ts_exch, local.last_ts_exch_ms)
+            else:
+                log.info("gap confirmed for %s… (rest hash %s not in stream after %.0fs); resetting book",
+                         aid[:10], b.get("hash", "")[:8], self.confirm_delay_s)
+                bids, asks = _levels(b)
+                local.apply_snapshot(bids, asks, b.get("hash", ""), ts_exch)
+            self._emit(b, ts_recv)
+            self.last_anchor[aid] = time.time()
+
+    def _emit(self, b: dict, ts_recv: int) -> None:
+        aid = b.get("asset_id", "")
+        bids, asks = _levels(b)
+        tick = float(b["tick_size"]) if b.get("tick_size") else None
+        cond = b.get("market", "") or self.token_cond.get(aid, "")
+        self.parser.emit_snapshot(ts_recv, int(b.get("timestamp") or 0), aid, cond, "snapshot_rest", bids, asks, b.get("hash", ""), tick, 0)

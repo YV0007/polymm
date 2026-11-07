@@ -1,0 +1,23 @@
+# systemd unit for the recorder on the VPS (Linux twin of com.polymm.recorder.plist).
+# Installed by ops/vps_setup.sh to /etc/systemd/system/polymm.service.
+#   systemctl status polymm      journalctl -u polymm -f      systemctl restart polymm
+[Unit]
+Description=polymm Polymarket order book / trade recorder
+# Why: start only once the network is really up, else the first connect fails.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=polymm
+WorkingDirectory=/home/polymm/polymm
+ExecStart=/home/polymm/.local/bin/uv run --frozen --project /home/polymm/polymm polymm -c /home/polymm/polymm/config.yaml record
+# Why Restart=always: a crash or OOM costs ~5 s of data, not a night.
+Restart=always
+RestartSec=5
+# Why 120 s: SIGTERM triggers drain + final flush; don't SIGKILL mid-write.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
