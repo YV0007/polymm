@@ -148,8 +148,40 @@ DERIVED: dict[str, pa.Schema] = {
     "rest_checks": REST_CHECKS,
 }
 
-_EVENT_COLUMNS = ["ts_recv_ns", "ts_exch_ms", "asset_id", "event_type", "snapshot_id", "side", "price", "size",
-                  "hash", "conn_id"]
+_EVENT_COLUMNS = ["ts_recv_ns", "ts_exch_ms", "asset_id", "condition_id", "event_type", "snapshot_id", "side",
+                  "price", "size", "hash", "conn_id"]
+
+
+@dataclass
+class Reconnects:
+    """Reconnect instants of one chunk, by scope.
+
+    Why scopes (D-022): with one WS connection per market family, a break of one
+    connection only makes the books it carried stale. The recorder writes such a
+    break as one `reconnect` row per market (condition_id set); a row with
+    condition_id "" (all data before D-022) still means every book."""
+
+    all: list[int] = field(default_factory=list)
+    by_cond: dict[str, list[int]] = field(default_factory=dict)
+
+    @classmethod
+    def from_rows(cls, ts: list[int], conds: list[str | None]) -> "Reconnects":
+        r = cls()
+        for t, c in zip(ts, conds):
+            if c:
+                r.by_cond.setdefault(c, []).append(t)
+            else:
+                r.all.append(t)
+        return r
+
+    def for_cond(self, cond: str) -> list[int]:
+        own = self.by_cond.get(cond)
+        return sorted(self.all + own) if own else self.all
+
+    @property
+    def count(self) -> int:
+        """Distinct breaks: one shard break writes a row per market at the same instant."""
+        return len(set(self.all).union(*self.by_cond.values()))
 
 
 # ---- configuration ---------------------------------------------------------------
@@ -704,7 +736,7 @@ class Replayer:
             ts = ts_l[i]
             et = et_l[i]
             aid = aid_l[i]
-            # reconnect markers (asset_id "") apply to every book
+            # reconnect markers that apply to this market (global ones + its own, D-022)
             while ri < n_rec and reconnects[ri] <= ts:
                 if snap_key is not None:
                     flush_snapshot()
@@ -803,22 +835,24 @@ class Replayer:
 
     # -- chunk driver ------------------------------------------------------------------------
 
-    def _chunk_conditions(self, df: pl.DataFrame) -> tuple[dict[str, pl.DataFrame], list[int]]:
+    def _chunk_conditions(self, df: pl.DataFrame) -> tuple[dict[str, pl.DataFrame], Reconnects]:
         """Split a sorted chunk into per-market frames (both tokens together) and
-        the list of reconnect instants."""
-        rec = df.filter(pl.col("event_type") == "reconnect")["ts_recv_ns"].to_list()
+        the reconnect instants by scope."""
+        r = df.filter(pl.col("event_type") == "reconnect")
+        rec = Reconnects.from_rows(r["ts_recv_ns"].to_list(), r["condition_id"].to_list())
         df = df.filter(pl.col("event_type") != "reconnect")
         cond_map = self.index.cond_of
         df = df.with_columns(pl.col("asset_id").replace_strict(cond_map, default=pl.col("asset_id"), return_dtype=pl.String).alias("cond"))
         parts = df.partition_by("cond", maintain_order=True, as_dict=True, include_key=False)
         return {k[0]: v for k, v in parts.items()}, rec
 
-    def _finish_chunk(self, t_end: int, reconnects: list[int]) -> None:
+    def _finish_chunk(self, t_end: int, reconnects: Reconnects) -> None:
         """Reconnects for assets without rows in this chunk, expired REST checks,
         and the depth grid up to the chunk end."""
-        self.stats["reconnects"] += len(reconnects)
+        self.stats["reconnects"] += reconnects.count
+        cond_of = self.index.cond_of
         for a in self.assets.values():
-            for r in reconnects:
+            for r in reconnects.for_cond(cond_of.get(a.asset_id, "")):
                 self._reconnect(a, r)
             if a.pending:
                 self._expire_pending(a, t_end)
@@ -854,9 +888,9 @@ class Replayer:
                 parts, rec = self._chunk_conditions(df)
                 del df
                 for cond, pdf in parts.items():
-                    self._process_market(cond, pdf, rec)
+                    self._process_market(cond, pdf, rec.for_cond(cond))
             else:
-                rec = []
+                rec = Reconnects()
             self._finish_chunk(c1, rec)
             self.stats["loop_s"] += time.perf_counter() - l0
             w0 = time.perf_counter()
@@ -1051,9 +1085,9 @@ def iter_books(data_dir: Path, asset_id: str, t0: int, t1: int, index: MarketInd
         if df.height:
             parts, rec = rp._chunk_conditions(df)
             for cond, pdf in parts.items():
-                rp._process_market(cond, pdf, rec)
+                rp._process_market(cond, pdf, rec.for_cond(cond))
         else:
-            rec = []
+            rec = Reconnects()
         rp._finish_chunk(c1, rec)
         for b in out:
             yield b

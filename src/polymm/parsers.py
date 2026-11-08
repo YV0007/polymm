@@ -89,14 +89,25 @@ class MarketParser:
 
     # ---- entry -------------------------------------------------------------------
 
+    def reconnect(self, ts_recv_ns: int, conn_id: int, conds: list[str] | None = None) -> None:
+        """Record where a connection broke.
+
+        Why a row: analysis must be able to see where the stream broke without
+        consulting logs. asset_id is always "". condition_id "" = the break applies
+        to every book (one shared connection). With one connection per family
+        (D-022) the recorder passes that connection's markets, and we write one row
+        per market: a break of the ladder feed must not mark the 15-minute books
+        stale, they kept streaming on their own connection."""
+        self.stats.reconnects += 1
+        buf = self.buffers["book_events"]
+        # Why None vs []: None = unknown scope (legacy single connection), mark all;
+        # [] = the connection carried no markets, nothing went stale.
+        for cond in [""] if conds is None else conds:
+            buf.append((ts_recv_ns, 0, "", cond, "reconnect", None, None, None, None, "", None, None, None, conn_id))
+
     def feed(self, ts_recv_ns: int, conn_id: int, raw: str) -> None:
         if raw == RECONNECT:
-            self.stats.reconnects += 1
-            # Why a row: analysis must be able to see where the stream broke
-            # without consulting logs. asset_id "" = applies to all.
-            self.buffers["book_events"].append(
-                (ts_recv_ns, 0, "", "", "reconnect", None, None, None, None, "", None, None, None, conn_id)
-            )
+            self.reconnect(ts_recv_ns, conn_id)
             return
         try:
             msg = orjson.loads(raw)

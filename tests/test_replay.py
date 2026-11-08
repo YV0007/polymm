@@ -58,8 +58,9 @@ def delta(ts, aid, side, price, size, hash_="", conn=1):
     return [(ts, _ms(ts), aid, _cond(aid), "delta", None, side, price, size, hash_, None, None, None, conn)]
 
 
-def reconnect(ts, conn=1):
-    return [(ts, 0, "", "", "reconnect", None, None, None, None, "", None, None, None, conn)]
+def reconnect(ts, conn=1, conds=None):
+    """conds=None: legacy global marker; a list: one scoped row per market (D-022)."""
+    return [(ts, 0, "", c, "reconnect", None, None, None, None, "", None, None, None, conn) for c in (conds or [""])]
 
 
 def trade(ts, aid, price, size, side):
@@ -424,3 +425,29 @@ def test_real_slice_matches_rest(tmp_path):
     assert inw["matched"].mean() >= 0.995
     tob = derived(tmp_path, "tob")
     assert tob.filter(pl.col("valid"))["spread"].min() > 0
+
+
+def test_scoped_reconnect_only_breaks_its_own_markets(tmp_path):
+    # D-022: market 2's connection breaks; market 1 streams on its own connection.
+    ev = snap(T0, YES, [(0.50, 10)], [(0.52, 5)], "a")
+    ev += snap(T0, YES2, [(0.30, 5)], [(0.32, 10)], "b", conn=2)
+    ev += delta(T0 + 1 * NS, YES, "BUY", 0.50, 11, "c")
+    ev += reconnect(T0 + 70 * NS, conn=2, conds=[COND2])  # second chunk: also exercises _finish_chunk
+    ev += delta(T0 + 71 * NS, YES, "BUY", 0.50, 12, "d")
+    ev += snap(T0 + 72 * NS, YES2, [(0.30, 6)], [(0.32, 10)], "e", conn=3)
+    write_dataset(tmp_path, ev)
+    rp, stats = run(tmp_path, chunk_s=60)
+    assert stats["reconnects"] == 1
+    w1 = derived(tmp_path, "clean_windows", YES)
+    assert w1["end_reason"].to_list() == ["end"] and w1["t_start"].to_list() == [T0]  # never broken
+    assert "reconnect" not in derived(tmp_path, "tob", YES)["event_type"].to_list()
+    w2 = derived(tmp_path, "clean_windows", YES2).sort("t_start")
+    assert w2["end_reason"].to_list() == ["reconnect", "end"]
+    assert w2["t_end"].to_list()[0] == T0 + 70 * NS and w2["t_start"].to_list()[1] == T0 + 72 * NS
+
+
+def test_scoped_reconnect_rows_count_once():
+    from polymm.replay import Reconnects
+    r = Reconnects.from_rows([5, 5, 9], ["0xa", "0xb", ""])
+    assert r.count == 2
+    assert r.for_cond("0xa") == [5, 9] and r.for_cond("0xz") == [9]

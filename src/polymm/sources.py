@@ -11,8 +11,10 @@ the RECONNECT marker it drops into the queue, which the parser records).
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import time
+from collections.abc import Iterator
 
 import orjson
 import websockets
@@ -24,12 +26,26 @@ RECONNECT = "__RECONNECT__"  # marker frame; never a valid JSON message
 
 
 class WsSource:
-    def __init__(self, url: str, queue: asyncio.Queue, ping_interval_s: float, custom_feature: bool):
+    def __init__(
+        self,
+        url: str,
+        queue: asyncio.Queue,
+        ping_interval_s: float,
+        custom_feature: bool,
+        name: str = "all",
+        conn_ids: Iterator[int] | None = None,
+    ):
         self.url = url
         self.queue = queue
         self.ping_interval_s = ping_interval_s
         self.custom_feature = custom_feature
+        self.name = name  # shard label (market family) for logs
+        # Why a shared counter: with one connection per family, conn_id must stay
+        # unique across all of them, so a RECONNECT marker (and every stored row's
+        # conn_id) points at exactly one connection.
+        self._conn_ids = conn_ids if conn_ids is not None else itertools.count(1)
         self.subscribed: set[str] = set()
+        self.conns: set[int] = set()  # every conn_id this source has used (marker -> shard lookup)
         self.conn_id = 0
         self.reconnects = 0
         self.connected_at: float | None = None
@@ -79,13 +95,14 @@ class WsSource:
                 # queue absorbs the burst in memory instead.
                 async with connect(self.url, max_size=16 * 2**20, open_timeout=20, max_queue=4096) as ws:
                     self._ws = ws
-                    self.conn_id += 1
+                    self.conn_id = next(self._conn_ids)
+                    self.conns.add(self.conn_id)
                     self.connected_at = time.time()
                     sub = {"assets_ids": sorted(self.subscribed), "type": "market"}
                     if self.custom_feature:
                         sub["custom_feature_enabled"] = True
                     await ws.send(orjson.dumps(sub).decode())
-                    log.info("ws connected conn_id=%d subscribed=%d", self.conn_id, len(self.subscribed))
+                    log.info("ws connected [%s] conn_id=%d subscribed=%d", self.name, self.conn_id, len(self.subscribed))
                     backoff = 1.0
                     pinger = asyncio.create_task(self._pinger(ws))
                     try:
@@ -103,7 +120,7 @@ class WsSource:
             except Exception as e:
                 if self._stop.is_set():
                     break
-                log.warning("ws disconnected (conn_id=%d): %r; reconnecting in %.0fs", self.conn_id, e, backoff)
+                log.warning("ws disconnected [%s] (conn_id=%d): %r; reconnecting in %.0fs", self.name, self.conn_id, e, backoff)
             self._ws = None
             self.reconnects += 1
             await self.queue.put((time.time_ns(), self.conn_id, RECONNECT))

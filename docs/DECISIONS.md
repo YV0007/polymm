@@ -150,3 +150,10 @@ Template:
 - **Rejected:** an explicit unsubscribe marker from the recorder (would work too, but only for new data).
 - **Ref:** `replay.py` `_reconnect`, `Replayer.run`; `research/quality_report.md` §4 #1
 - **Status:** active
+
+### D-022 · 2026-11-08 · One WS connection per family, scoped reconnect markers, loop-lag in health, no auto-restart on upgrades
+- **Decision:** (1) The recorder opens one Polymarket market-channel connection per family (`recorder.ws_shard_by_family`), conn_ids unique across them. (2) A break writes one `reconnect` row per market of that connection (`condition_id` set); `condition_id ""` keeps meaning "every book". Replay applies each row only to its market; quality/audit count distinct instants. (3) `health.loop_lag_max_ms` = worst event-loop freeze per 10 s. (4) needrestart never restarts `polymm.service` after library upgrades; restarts happen through `ops/deploy.sh`.
+- **Why:** 11-07/08: 9 of 12 disconnects were Polymarket closing us with 1013 "slow consumer: send buffer full". It was not our side: in the 60 s before each cut Binance stamps on the same loop never paused > 1 s, Polymarket frames never > 1.6 s, our socket Recv-Q was ~0 and the 20 s before a cut carried only 1–2.5× the normal byte rate. The buffer that fills is theirs, per connection (via CloudFront). Less flow per connection fills it less often and a cut stays inside one family. Scoped markers keep the other families' clean windows open (a global marker would leave them stale until the next REST anchor, up to 5 min). The 06:30 UTC restart on 11-08 was unattended-upgrades → needrestart after libc/openssl updates.
+- **Rejected:** a bigger client buffer (ours is not the one filling); duplicate redundant connections with arbitration (doubles storage, more complex; revisit for live trading); turning off custom features (`new_market` is ≤ 11 % of bytes and `market_resolved` is needed).
+- **Ref:** `recorder.py`, `sources.py`, `parsers.py` `reconnect`, `replay.py` `Reconnects`, `ops/vps_setup.sh`
+- **Status:** active

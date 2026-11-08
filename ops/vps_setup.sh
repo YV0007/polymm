@@ -11,6 +11,15 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq chrony unattended-upgrades
 # Why chrony: ts_recv_ns is our clock; latency = ts_recv - ts_exch is only
 # meaningful if the server clock is disciplined to ms level.
 systemctl enable --now chrony
+# Why (D-022): unattended-upgrades runs needrestart, which restarts every service
+# still using an upgraded library (libc, openssl), at whatever moment the upgrade
+# lands (06:30 UTC on 2026-11-08). The recorder is restarted by us at a chosen time
+# (ops/deploy.sh polymm restart), which also picks up the patched libraries.
+install -d /etc/needrestart/conf.d
+cat > /etc/needrestart/conf.d/polymm.conf <<'NR'
+# Never auto-restart the polymm recorder after library upgrades (D-022).
+$nrconf{override_rc}{qr(^polymm\.service$)} = 0;
+NR
 
 # ---- service user (no password, key login only) ------------------------------------
 id polymm >/dev/null 2>&1 || useradd -m -s /bin/bash polymm

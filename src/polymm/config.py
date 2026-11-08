@@ -37,6 +37,10 @@ class RecorderSettings(BaseModel):
     unsubscribe_grace_s: float = 600
     health_interval_s: float = 10
     custom_feature_enabled: bool = True
+    # Why (D-022): one WS connection per market family. Polymarket cuts a connection
+    # whose server-side send buffer fills ("slow consumer"); smaller per-connection
+    # flow fills it less often, and a cut on one family leaves the others streaming.
+    ws_shard_by_family: bool = True
 
 
 class Family(BaseModel):

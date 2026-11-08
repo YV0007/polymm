@@ -1,17 +1,19 @@
 """Recorder: the composition root. Wires the stations and owns the event loop.
 
-   WsSource ──► queue ──► consumer ──► RawSink.append
-                                   └─► MarketParser ──► ParquetSink.buffers
+   WsSource × families ──► queue ──► consumer ──► RawSink.append
+                                             └─► MarketParser ──► ParquetSink.buffers
    flusher (every N s): take() both sinks ──► to_thread(write)
-   UniverseWatcher (60 s) ──► WsSource.set_subscriptions, `markets` rows
+   UniverseWatcher (60 s) ──► WsSource.set_subscriptions (per family), `markets` rows
    RestPoller (60 s)      ──► gap check, `snapshot_rest` rows
    BinanceSource ──► spot_queue ──► spot_consumer ──► RawSink(binance) + SpotParser
+   lag monitor (0.1 s)    ──► worst event-loop freeze per health interval
    Health (10 s)          ──► `health` rows + log line
-   SIGTERM/SIGINT         ──► stop source, drain queue, final flush, close
+   SIGTERM/SIGINT         ──► stop sources, drain queue, final flush, close
 """
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import signal
 import time
@@ -22,7 +24,7 @@ from .parsers import MarketParser
 from .poller import RestPoller
 from .rest import PolyRest
 from .sinks import ParquetSink, RawSink
-from .sources import WsSource
+from .sources import RECONNECT, WsSource
 from .spot import BinanceSource, SpotParser
 from .universe import UniverseWatcher
 
@@ -40,7 +42,19 @@ class Recorder:
         self.parquet = ParquetSink(cfg.data_dir)
         self.raw = RawSink(cfg.data_dir, level=rs.raw_zstd_level, rotate_minutes=rs.raw_rotate_minutes)
         self.parser = MarketParser(self.books, self.parquet.buffers, self.universe.token_cond, self.universe.token_pair)
-        self.source = WsSource(cfg.endpoints.ws_market, self.queue, rs.ping_interval_s, rs.custom_feature_enabled)
+        # Why one connection per family (D-022): on 2026-11-07/08 Polymarket closed our
+        # single connection 9 times as a "slow consumer" while our loop never froze
+        # (Binance stamps on the same loop ran without pause) and our socket buffer was
+        # empty. The buffer that fills is on their side, per connection, so less flow
+        # per connection fills it less often, and a cut stays inside one family.
+        # All shards feed the same queue: one consumer, one parser, one clock.
+        conn_ids = itertools.count(1)
+        names = [f.name for f in cfg.families] if rs.ws_shard_by_family else ["all"]
+        self.sources: dict[str, WsSource] = {
+            n: WsSource(cfg.endpoints.ws_market, self.queue, rs.ping_interval_s, rs.custom_feature_enabled, n, conn_ids)
+            for n in names
+        }
+        self.loop_lag_max_ms = 0.0
         self.poller = RestPoller(
             self.rest, self.books, self.parser, self.universe.token_cond, rs.rest_poll_interval_s, rs.rest_anchor_interval_s
         )
@@ -73,7 +87,8 @@ class Recorder:
         await self._universe_tick()
 
         tasks = {
-            "source": asyncio.create_task(self.source.run(), name="source"),
+            **{f"source:{n}": asyncio.create_task(s.run(), name=f"source:{n}") for n, s in self.sources.items()},
+            "lag": asyncio.create_task(self._lag_monitor(), name="lag"),
             "consumer": asyncio.create_task(self._consumer(), name="consumer"),
             "flusher": asyncio.create_task(self._flusher(), name="flusher"),
             "poller": asyncio.create_task(self.poller.run(), name="poller"),
@@ -85,15 +100,16 @@ class Recorder:
             tasks["spot_consumer"] = asyncio.create_task(self._spot_consumer(), name="spot_consumer")
         await self._stop.wait()
         log.info("stopping: draining queues (%d poly + %d spot items)", self.queue.qsize(), self.spot_queue.qsize())
-        self.source.stop()
+        for s in self.sources.values():
+            s.stop()
         self.poller.stop()
         if self.spot_source is not None:
             self.spot_source.stop()
         # Why in two rounds: producers first, then let the consumers drain what is
         # already queued, then the consumers and the flusher.
-        for k in ("source", "poller", "universe", "health", "spot_source"):
-            if k in tasks:
-                tasks[k].cancel()
+        for k, t in tasks.items():
+            if k.startswith("source:") or k in ("lag", "poller", "universe", "health", "spot_source"):
+                t.cancel()
         while not (self.queue.empty() and self.spot_queue.empty()):
             await asyncio.sleep(0.05)
         for k in ("consumer", "spot_consumer", "flusher"):
@@ -116,7 +132,10 @@ class Recorder:
         while True:
             ts, conn, raw = await q.get()
             self.raw.append(ts, conn, raw)  # raw first: insurance before interpretation
-            self.parser.feed(ts, conn, raw)
+            if raw == RECONNECT:
+                self.parser.reconnect(ts, conn, self._conds_of_conn(conn))
+            else:
+                self.parser.feed(ts, conn, raw)
             d = q.qsize()
             if d > self.queue_max_seen:
                 self.queue_max_seen = d
@@ -127,6 +146,34 @@ class Recorder:
             n += 1
             if n % 20 == 0:
                 await asyncio.sleep(0)
+
+    def _conds_of_conn(self, conn: int) -> list[str] | None:
+        """Markets carried by the connection that broke, for scoped reconnect rows.
+
+        Why look up by every conn_id a source used: the consumer may read the marker
+        after that source already reconnected under a new id. conn 0 = the source
+        never connected, so it carried no books: nothing goes stale ([]).
+        With a single shared connection the scope is "all" (None), as before D-022."""
+        if len(self.sources) == 1:
+            return None
+        if conn == 0:
+            return []
+        for s in self.sources.values():
+            if conn in s.conns:
+                return sorted({c for a in s.subscribed if (c := self.universe.token_cond.get(a))})
+        return None  # unknown connection: be conservative, mark every book
+
+    async def _lag_monitor(self, interval_s: float = 0.1) -> None:
+        """Why: "slow consumer" can mean our loop froze or the venue's buffer filled.
+        A timer that should fire every 100 ms and fires late measures the freeze
+        directly; the worst value per health interval goes into `health`."""
+        loop = asyncio.get_running_loop()
+        while True:
+            t = loop.time()
+            await asyncio.sleep(interval_s)
+            lag = (loop.time() - t - interval_s) * 1000
+            if lag > self.loop_lag_max_ms:
+                self.loop_lag_max_ms = lag
 
     async def _spot_consumer(self) -> None:
         q = self.spot_queue
@@ -188,7 +235,16 @@ class Recorder:
         if refreshed and time.time() - self.universe._last_refresh_rows_ts > 3600:
             self.parquet.buffers["markets"].extend(UniverseWatcher.rows("refresh", refreshed, ts))
             self.universe._last_refresh_rows_ts = time.time()
-        await self.source.set_subscriptions(self.universe.desired_tokens())
+        if len(self.sources) == 1:
+            await next(iter(self.sources.values())).set_subscriptions(self.universe.desired_tokens())
+        else:
+            groups = self.universe.desired_tokens_by_family()
+            first = next(iter(self.sources))
+            want: dict[str, set[str]] = {n: set() for n in self.sources}
+            for fam, toks in groups.items():
+                want[fam if fam in want else first] |= toks  # unknown family: first connection
+            for n, s in self.sources.items():
+                await s.set_subscriptions(want[n])
         for mi in removed:
             for aid, _ in mi.tokens:
                 self.books.pop(aid, None)
@@ -209,25 +265,34 @@ class Recorder:
             sp = self.spot_parser.stats
             spot_reconn = self.spot_source.reconnects if self.spot_source is not None else 0
             tob_mm = sum(b.tob_mismatches for b in self.books.values())
+            # Why aggregate: `health` keeps one row per interval; conn_id = newest
+            # connection id (rises on every reconnect of any shard), reconnects summed.
+            srcs = list(self.sources.values())
+            conn_id = max(x.conn_id for x in srcs)
+            n_sub = sum(len(x.subscribed) for x in srcs)
+            reconn = sum(x.reconnects for x in srcs)
+            lag_ms, self.loop_lag_max_ms = self.loop_lag_max_ms, 0.0
             row = (
-                time.time_ns(), self.source.conn_id, time.time() - self.started_at, len(self.source.subscribed),
+                time.time_ns(), conn_id, time.time() - self.started_at, n_sub,
                 s.msgs_total, s.msgs_book, s.msgs_delta, s.rows_delta, s.msgs_trade, s.msgs_tob, s.msgs_other,
-                s.parse_errors, self.source.reconnects, self.poller.gaps, tob_mm, self.poller.polls,
+                s.parse_errors, reconn, self.poller.gaps, tob_mm, self.poller.polls,
                 self.queue.qsize(), self.queue_max_seen, self.last_write_latency_ms,
                 self.raw.bytes_written, self.parquet.bytes_written, s.mirror_dropped, s.mirror_kept,
-                sp.msgs, spot_reconn,
+                sp.msgs, spot_reconn, lag_ms,
             )
             self.parquet.buffers["health"].append(row)
+            shards = " ".join(f"{x.name}:c{x.conn_id}/r{x.reconnects}/s{len(x.subscribed)}" for x in srcs)
             log.info(
                 "conn=%d sub=%d msgs=%d (book=%d delta=%d/%drows trade=%d tob=%d other=%d err=%d) "
-                "reconn=%d gaps=%d races=%d tobmm=%d polls=%d q=%d/%d wlat=%.0fms raw=%.1fMB pq=%.1fMB mirror=%d dropped/%d kept "
-                "spot=%d (q=%d t=%d err=%d reconn=%d q=%d/%d)",
-                self.source.conn_id, len(self.source.subscribed), s.msgs_total, s.msgs_book, s.msgs_delta,
-                s.rows_delta, s.msgs_trade, s.msgs_tob, s.msgs_other, s.parse_errors, self.source.reconnects,
+                "reconn=%d gaps=%d races=%d tobmm=%d polls=%d q=%d/%d wlat=%.0fms lag=%.0fms raw=%.1fMB pq=%.1fMB "
+                "mirror=%d dropped/%d kept spot=%d (q=%d t=%d err=%d reconn=%d q=%d/%d) ws[%s]",
+                conn_id, n_sub, s.msgs_total, s.msgs_book, s.msgs_delta,
+                s.rows_delta, s.msgs_trade, s.msgs_tob, s.msgs_other, s.parse_errors, reconn,
                 self.poller.gaps, self.poller.races, tob_mm, self.poller.polls, self.queue.qsize(), self.queue_max_seen,
-                self.last_write_latency_ms, self.raw.bytes_written / 1e6, self.parquet.bytes_written / 1e6,
+                self.last_write_latency_ms, lag_ms, self.raw.bytes_written / 1e6, self.parquet.bytes_written / 1e6,
                 s.mirror_dropped, s.mirror_kept,
                 sp.msgs, sp.quotes, sp.trades, sp.parse_errors, spot_reconn, self.spot_queue.qsize(), self.spot_queue_max_seen,
+                shards,
             )
             if self.parquet.pending_rows() >= rs.flush_max_rows:
                 asyncio.create_task(self._flush())

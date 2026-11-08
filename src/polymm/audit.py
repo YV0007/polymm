@@ -76,7 +76,7 @@ def run_audit(cfg: Config, date: str | None) -> int:
                count(*) filter (where event_type='delta') as deltas,
                count(*) filter (where event_type='snapshot_ws') as snap_ws,
                count(*) filter (where event_type='snapshot_rest') as snap_rest,
-               count(*) filter (where event_type='reconnect') as reconnects
+               count(distinct ts_recv_ns) filter (where event_type='reconnect') as reconnects  -- one break = one instant (D-022 writes a row per market)
         from read_parquet({glob('book_events')}, hive_partitioning=1, union_by_name=1)
         group by hour order by hour
     """)

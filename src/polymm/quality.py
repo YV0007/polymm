@@ -396,7 +396,7 @@ def check_coverage(con: duckdb.DuckDBPyConnection, t0: int, t1: int, th: dict = 
                    count(*) filter (where event_type = 'delta') as deltas,
                    count(*) filter (where event_type = 'snapshot_ws') as snap_ws,
                    count(*) filter (where event_type = 'snapshot_rest') as snap_rest,
-                   count(*) filter (where event_type = 'reconnect') as reconnects
+                   count(distinct ts_recv_ns) filter (where event_type = 'reconnect') as reconnects  -- one break = one instant (D-022)
             from book_events group by 1 order by 1""")
         # Why only full hours: the first/last hour of a window is short by construction.
         full = per_hour.filter((pl.col("hour") * NS >= t0) & ((pl.col("hour") + 3600) * NS <= t1))

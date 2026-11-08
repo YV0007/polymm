@@ -26,6 +26,7 @@ recorder:
   unsubscribe_grace_s: 600     # keep a market subscribed this long after its endDate
   health_interval_s: 10
   custom_feature_enabled: true # also receive best_bid_ask, new_market, market_resolved
+  ws_shard_by_family: true     # one WS connection per family; a "slow consumer" cut hits one family only (D-022)
 
 spot:                          # Binance BTC/USDT, recorded in the same process (one clock for both feeds)
   enabled: true

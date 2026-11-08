@@ -117,6 +117,9 @@ HEALTH = pa.schema(
         # Added 2026-11-07 (spot feed). Older files lack these: read with union_by_name.
         ("spot_msgs", pa.int64()),
         ("spot_reconnects", pa.int64()),
+        # Added 2026-11-08 (D-022). Worst event-loop freeze in the last health interval:
+        # tells "we stopped reading" (high) apart from "the venue cut us" (low).
+        ("loop_lag_max_ms", pa.float64()),
     ]
 )
 
