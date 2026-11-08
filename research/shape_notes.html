@@ -1,0 +1,379 @@
+<title>Polymarket Book Shape</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: one reading column; a summary table, then one "figure sheet" per plot
+   (plot on a white plate, then a two-column note grid), then verdicts. Desk research-note feel. */
+:root {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --ink: #16202b;
+  --muted: #586473;
+  --rule: #d8dee6;
+  --accent: #1c5a9e;
+  --accent-soft: #e4edf8;
+  --warn: #9a4c12;
+  --warn-soft: #fbefe3;
+  --good: #1d6f4f;
+  --good-soft: #e3f3ec;
+  --plate: #ffffff;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1319; --surface: #151c25; --ink: #e5eaf0; --muted: #9ba7b5; --rule: #29333f;
+    --accent: #84b3ec; --accent-soft: #1a2a3d; --warn: #e7a46d; --warn-soft: #33261b;
+    --good: #72cfa3; --good-soft: #17302a; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1319; --surface: #151c25; --ink: #e5eaf0; --muted: #9ba7b5; --rule: #29333f;
+  --accent: #84b3ec; --accent-soft: #1a2a3d; --warn: #e7a46d; --warn-soft: #33261b;
+  --good: #72cfa3; --good-soft: #17302a; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15.5px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 64px;
+}
+.wrap { max-width: 1080px; margin: 0 auto; display: grid; gap: 40px; }
+h1, h2, h3 { font-family: var(--f-display); line-height: 1.15; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(30px, 4.6vw, 44px); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 26px; font-weight: 600; }
+h3 { font-size: 21px; font-weight: 600; }
+p { margin: 0; }
+.mono, td.num, .num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.eyebrow { font-family: var(--f-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+header { display: grid; gap: 14px; }
+header .lede { max-width: 70ch; color: var(--muted); font-size: 16.5px; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font-family: var(--f-mono); font-size: 12px; padding: 3px 9px; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); color: var(--muted); }
+.method { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.method div { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; font-size: 14px; min-width: 0; }
+.method b { display: block; font-family: var(--f-display); font-size: 16px; margin-bottom: 2px; }
+section { display: grid; gap: 16px; }
+.tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; min-width: 900px; font-size: 13.5px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+th { font-family: var(--f-mono); font-size: 11.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); font-weight: 500; background: var(--bg); position: sticky; top: 0; }
+tbody tr:last-child td { border-bottom: 0; }
+td:first-child { font-weight: 600; white-space: nowrap; }
+td .k { font-family: var(--f-mono); font-size: 12.5px; }
+.fig { display: grid; gap: 16px; padding-top: 28px; border-top: 2px solid var(--ink); }
+.fig-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+.fig-head .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.tag { font-family: var(--f-mono); font-size: 11.5px; padding: 2px 8px; border-radius: 3px; background: var(--accent-soft); color: var(--accent); }
+.plate { background: var(--plate); border: 1px solid var(--rule); border-radius: 6px; padding: 10px; display: grid; gap: 8px; }
+.plate img { display: block; width: 100%; height: auto; max-width: 100%; }
+.toggle { display: flex; gap: 6px; flex-wrap: wrap; }
+.toggle button {
+  font-family: var(--f-mono); font-size: 12px; padding: 4px 10px; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--rule); background: var(--surface); color: var(--muted);
+}
+.toggle button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.toggle button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cap { font-size: 13px; color: #4a5562; font-family: var(--f-mono); padding: 0 4px 2px; }
+.notes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 28px; }
+.notes > div { min-width: 0; display: grid; gap: 10px; align-content: start; }
+.note h4 { font-family: var(--f-mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 500; margin: 0 0 3px; }
+.note p, .note li { font-size: 14.5px; }
+.note ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.callout { border-radius: 5px; padding: 10px 12px; }
+.callout.trap { background: var(--warn-soft); }
+.callout.trap h4 { color: var(--warn); }
+.callout.next { background: var(--good-soft); }
+.callout.next h4 { color: var(--good); }
+.formula { font-family: var(--f-mono); font-size: 13.5px; background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; padding: 7px 10px; overflow-x: auto; white-space: nowrap; }
+.sat { font-size: 13.5px; color: var(--muted); border-left: 2px solid var(--rule); padding-left: 10px; }
+.verdicts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.verdict { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 16px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.verdict .call { font-family: var(--f-display); font-weight: 600; font-size: 17px; color: var(--accent); }
+.habits { display: grid; gap: 10px; counter-reset: h; }
+.habits div { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px 12px 50px; position: relative; }
+.habits div::before { counter-increment: h; content: counter(h); position: absolute; left: 16px; top: 11px; font-family: var(--f-mono); font-weight: 500; color: var(--accent); font-size: 17px; }
+.foot { color: var(--muted); font-size: 13.5px; }
+@media (max-width: 760px) { .notes { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: no-preference) { .toggle button { transition: background .15s, color .15s; } }
+</style>
+
+<div class="wrap">
+
+<header>
+  <span class="eyebrow">Stage 2 · Shape of the market · research note</span>
+  <h1>Polymarket Book Shape</h1>
+  <p class="lede">What the order books of our three market families look like, what each plot tells a market maker, and what it changes in how we model the next stages. Every number is provisional: one weekday (Friday, 11 h on the laptop) and one Saturday morning (2 h 20 min on the VPS).</p>
+  <div class="meta">
+    <span class="chip">Fri 2026-11-06 13:10–00:25 UTC</span>
+    <span class="chip">Sat 2026-11-07 09:35–11:55 UTC</span>
+    <span class="chip">btc_15m · btc_daily_ladder · fed_dec_2026</span>
+    <span class="chip">code: src/polymm/shape.py</span>
+  </div>
+  <div class="method">
+    <div><b>Trusted time only</b>Statistics are read only inside strict clean windows: stretches where the rebuilt book was verified against REST snapshots.</div>
+    <div><b>Time-weighted</b>The book is sampled on a 1-second grid, so every second counts once. Counting events instead would weight busy minutes about 8× more.</div>
+    <div><b>One side per market</b>Only the Yes/Up book is measured. The No book is its mirror (No bid = 1 − Yes ask), checked at 100 %.</div>
+    <div><b>Orders, not messages</b>Trade messages on the same token and side within 50 ms are grouped into one taker order. Sweeps don't share a transaction hash in this feed.</div>
+  </div>
+</header>
+
+<section>
+  <h2>What we checked</h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Check</th><th>How it is computed</th><th>Why a desk cares</th><th>btc_15m</th><th>btc_daily_ladder</th><th>fed_dec_2026</th></tr></thead>
+      <tbody>
+        <tr><td>Spread in ticks</td><td>Share of seconds at &lt;1, 1, 2, 3, 4–5, &gt;5 ticks; p50/p90</td><td>Is the tick binding? If yes you compete on queue, not price</td><td class="num">1 tick 97–99 % (live min.)</td><td class="num">far strikes sub-cent; near-money p50 1.6–2.1 t</td><td class="num">live markets 1 tick ~100 %</td></tr>
+        <tr><td>Spread vs expiry, moneyness</td><td>Same, by minute of window / hours to 12:00 ET / |K/S − 1|</td><td>Regimes inside one instrument</td><td class="num">1 tick drops to 78 % by min. 13</td><td class="num">only strikes within ~2 % of spot are alive</td><td class="num">flat</td></tr>
+        <tr><td>Depth within k ticks</td><td>Cumulative $ resting within 1/2/3/5 ticks of mid, p25/p50/p75</td><td>How far a sweep walks; how big your quote is relative to the book</td><td class="num">$62 / $462 bid at 1 / 3 t</td><td class="num">$834 both sides at 3 t, near-money</td><td class="num">$151k / $171k at 3 t (hike-25)</td></tr>
+        <tr><td>Queue at the touch vs trade size</td><td>$ at best bid/ask vs median trade; share of trades that wipe the level</td><td>Fill probability and the "sweep vs nibble" mix</td><td class="num">$62/$42 vs $7 order; 26 % wipe</td><td class="num">$9/$7 vs $10; 42 % wipe</td><td class="num">$1.3k/$300 pooled; 0.3 % of level</td></tr>
+        <tr><td>Depth imbalance</td><td>(bid − ask)/(bid + ask) within 3 ticks</td><td>Short-term direction signal; who is leaning</td><td class="num">–</td><td class="num">|imb| &gt; 0.5 in 68 % of seconds</td><td class="num">–</td></tr>
+        <tr><td>Order flow rates</td><td>Adds, cancels (from size changes), trade messages, taker orders per market-minute</td><td>Order-to-trade ratio: how algorithmic the book is</td><td class="num">≈ 117 adds per trade</td><td class="num">≈ 1,650 adds per trade</td><td class="num">≈ 110 adds per trade</td></tr>
+        <tr><td>Resting time (proxy)</td><td>Share of added size gone from its level within 1 / 10 / 60 s</td><td>How fast competitors re-quote; queue churn</td><td class="num">80 / 95 / 97 %</td><td class="num">53 / 80 / 92 %</td><td class="num">45 % within 60 s</td></tr>
+        <tr><td>Taker order size</td><td>CDF of grouped order $; p50/p90/p99</td><td>Size is the cheapest toxicity feature</td><td class="num">$7 / $64 / $341</td><td class="num">$10 / $299 / $2,872</td><td class="num">$15 / $585 / $7,505</td></tr>
+        <tr><td>Sweeps, direction</td><td>Orders hitting ≥ 2 makers or ≥ 2 levels; buy share by count and $</td><td>Inventory arrives in lumps; balanced flow keeps inventory flat</td><td class="num">7.5 % sweep, 24.5 % of $; 50 % buys</td><td class="num">48 % buys</td><td class="num">35 % buys</td></tr>
+        <tr><td>Jumps</td><td>Mid moves ≥ 2/5/10 ticks within 1 s and 10 s, per clean hour</td><td>Rate at which stale quotes get picked off</td><td class="num">200 / 30 / 4 per h</td><td class="num">2.1 / 0.5 / 0.1 per h</td><td class="num">0.06 per h</td></tr>
+        <tr><td>Jumps after a Binance move</td><td>Share of 1-s jumps preceded by a ≥ 0.01 % Binance move within 10 s (VPS only)</td><td>Lead–lag: can we cancel before being hit?</td><td class="num">18.6 % vs 2.2 % base (n = 70)</td><td class="num">–</td><td class="num">–</td></tr>
+        <tr><td>15-min life cycle</td><td>All of the above by minute 0–14 of the window</td><td>Where in the window quoting is viable</td><td class="num">min. 0–9 stable; 12–14 collapse</td><td class="num">–</td><td class="num">–</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>The plots, one by one</h2>
+  <p class="foot">Each plot has a Friday (laptop, 11 h) and a Saturday (VPS, 2 h 20 min) version. The notes read the Friday plot, which has more data; the grey line under each note says how Saturday differs.</p>
+</section>
+
+<!-- 1 spread -->
+<article class="fig" data-img="spread">
+  <div class="fig-head"><h3>1 · Spread in ticks</h3><div class="tags"><span class="tag">Skill 1 · liquidity</span><span class="tag">Skill 3 · spread capture</span></div></div>
+  <div class="plate"><div class="toggle"></div><img alt="Stacked bars: share of clean time at each spread in ticks, per family" loading="lazy"><div class="cap"></div></div>
+  <div class="notes">
+    <div>
+      <div class="note"><h4>How it is computed</h4><p>For every clean second, take best ask − best bid and divide by the tick (1¢). Stack the share of seconds in each bin. Seconds where one side is empty are excluded (n = 111k s for 15m, 781k ladder, 193k Fed).</p></div>
+      <div class="note"><h4>What to notice</h4><ul>
+        <li><b>15m</b> sits at exactly 1 tick 90 % of the time, and 97–99 % during the live minutes. The 9 % at 2 ticks is mostly the half hour before a window opens.</li>
+        <li><b>Ladder</b> shows 80 % "&lt;1 tick". That isn't tight markets: those are far strikes priced at 0.1–0.5¢, where the tick switches to 0.1¢.</li>
+        <li><b>Fed</b> shows 60 % sub-tick for the same reason: three dead outcomes at 0.1¢ are pooled with two live ones that sit at 1 tick.</li>
+      </ul></div>
+      <div class="note"><h4>Vocabulary</h4><p><b>Quoted spread</b> = ask − bid. <b>Effective spread</b> = 2·|P − m| for an actual trade at P, mid m. <b>Realized spread</b> = 2·s·(P − m<sub>t+τ</sub>): what a maker actually keeps after the price has moved. Stage 3 measures the third.</p></div>
+    </div>
+    <div>
+      <div class="note"><h4>Why a desk cares</h4><p>A 1¢ tick on a 50¢ token is a <b>200 bp</b> quoted spread. BTC on Binance quotes 0.01 on 76,000, about 0.001 bp. Polymarket is an extreme <b>large-tick</b> market. When the tick binds, nobody can quote tighter, so the spread says nothing about risk. Makers compete on <b>queue priority</b>, and edge has to show up in markouts, not in the quote.</p></div>
+      <div class="callout trap"><h4>Common mistake</h4><p>Reading a pooled bar. The Fed and ladder bars mix live and dead instruments. Always split by instrument state (moneyness, live or dead, time to expiry) before drawing a conclusion. Plot 8 does that for the ladder.</p></div>
+      <div class="callout next"><h4>What it leads to</h4><p>15m and Fed: half-spread is fixed at 0.5¢, so profit = 0.5¢ − adverse selection per fill. Stage 3 markouts decide everything. Ladder near the money: spread is a real choice, so the fair-value model (stage 4) sets it.</p></div>
+      <p class="sat">Saturday: 15m live minutes 99–100 % at 1 tick; ladder 11 % at 1 tick (only far-dated strikes recorded).</p>
+    </div>
+  </div>
+</article>
+
+<!-- 2 depth -->
+<article class="fig" data-img="depth">
+  <div class="fig-head"><h3>2 · Depth within k ticks of mid</h3><div class="tags"><span class="tag">Skill 1 · depth</span><span class="tag">Skill 2 · impact</span></div></div>
+  <div class="plate"><div class="toggle"></div><img alt="Resting dollars within 1, 2, 3, 5 ticks of mid, bid and ask, median with p25–p75 band, per family" loading="lazy"><div class="cap"></div></div>
+  <div class="notes">
+    <div>
+      <div class="note"><h4>How it is computed</h4><p>Each second, add up shares × price on each side for levels within k ticks of the mid. Median across seconds, band = p25–p75, log scale. We store 5 levels, so k = 5 is a lower bound in deep books.</p></div>
+      <div class="note"><h4>What to notice</h4><ul>
+        <li><b>15m is a funnel:</b> $62 at the touch, $462 within 3 ticks, about $1,000 within 5. Thin at the front, deep behind.</li>
+        <li><b>Ladder flattens after 3 ticks:</b> there are few levels. Its band spans two orders of magnitude because near and far strikes are pooled.</li>
+        <li><b>Fed bid is flat at about $12k:</b> nearly all of the depth sits at the touch. That is resting rewards inventory, not a staircase of orders.</li>
+      </ul></div>
+    </div>
+    <div>
+      <div class="note"><h4>Why a desk cares</h4><p>The depth profile is the <b>price-impact curve</b>. It tells you how far a sweep travels, so it sets the cost of a toxic fill when you sit at level 1 vs level 2. It also tells you whether your quote is small next to the book (you are a price-taker on queue) or <i>is</i> the book (you set the price and carry the information risk).</p></div>
+      <div class="callout trap"><h4>Common mistake</h4><p>Measuring depth in shares. The Fed bid has a median of <span class="mono">4.8 M shares</span> but only <span class="mono">$11.6k</span>, because the shares sit on dead outcomes at 0.1¢. Convert to $, and for risk use p(1−p) per share, the variance of a binary payoff.</p></div>
+      <div class="callout next"><h4>What it leads to</h4><p>Sizing: a $100–200 quote on 15m is small next to $450 within 3 ticks but a large share of the $60 touch. Stage 5 (queue and fill model) and the simulator will use these curves to price sweeps.</p></div>
+      <p class="sat">Saturday: 15m thinner ($204 / $236 within 3 ticks); near-money ladder deeper ($2.9k vs $834).</p>
+    </div>
+  </div>
+</article>
+
+<!-- 3 queue -->
+<article class="fig" data-img="queue">
+  <div class="fig-head"><h3>3 · Queue at the best price vs trade size</h3><div class="tags"><span class="tag">Skill 2 · queue position</span><span class="tag">Skill 3 · toxicity</span></div></div>
+  <div class="plate"><div class="toggle"></div><img alt="Dollars at best bid and best ask per family, p25–p75 bars with median tick, compared with the median trade size" loading="lazy"><div class="cap"></div></div>
+  <div class="notes">
+    <div>
+      <div class="note"><h4>How it is computed</h4><p>$ resting at the best bid (left bar) and best ask (right bar) each second: p25–p75 bar, median tick. The dashed line is the median trade message in $.</p></div>
+      <div class="note"><h4>What to notice</h4><ul>
+        <li><b>15m:</b> median queue is about 10× the median trade, but p25 (about $17) is close to one trade. A median trade takes 15 % of the level it hits, and <b>26 % of trades wipe the level out</b>.</li>
+        <li><b>Ladder:</b> queue ≈ one trade. 42 % of trades wipe the level, so every fill here is a "big" fill relative to the book.</li>
+        <li><b>Fed:</b> the queue is 60–250× a trade. A new order would wait days for a fill.</li>
+      </ul></div>
+    </div>
+    <div>
+      <div class="note"><h4>Why a desk cares</h4><p>Your expected wait at the back of the queue is roughly</p><div class="formula">E[wait] ≈ (size ahead of you) / (taker $ per minute hitting your side + cancels ahead of you)</div><p>A small trade "nibbling" a deep queue is usually noise. A trade bigger than the whole level (a sweep) usually carries information. The <b>nibble vs sweep mix</b> is the toxicity question in its simplest form.</p></div>
+      <div class="callout trap"><h4>Common mistake</h4><p>Modelling the queue as moving only through trades. On 15m, 80 % of added size is cancelled within 1 s, so you move up mostly because others cancel. And the orders that stay ahead of you may be stale. Queue models (Cont–de Larrard, Moallemi–Yuan) need a cancel rate, not just a trade rate.</p></div>
+      <div class="callout next"><h4>What it leads to</h4><p>Stage 3: markout conditional on "did the fill wipe the level?". Stage 5: fill probability by queue position, fitted on VPS data only (laptop timing was stalled).</p></div>
+      <p class="sat">Saturday: 15m touch $23 / $28; 28 % of trades wipe the level.</p>
+    </div>
+  </div>
+</article>
+
+<!-- 4 flow -->
+<article class="fig" data-img="flow">
+  <div class="fig-head"><h3>4 · Order flow rates</h3><div class="tags"><span class="tag">Skill 1 · orders &amp; cancels</span><span class="tag">Skill 5 · latency</span></div></div>
+  <div class="plate"><div class="toggle"></div><img alt="Adds, cancels, trade messages and taker orders per market-minute, per family, log scale" loading="lazy"><div class="cap"></div></div>
+  <div class="notes">
+    <div>
+      <div class="note"><h4>How it is computed</h4><p>From the replay's labelled book changes: a size increase at a level is an <b>add</b>, a decrease not explained by a trade is a <b>cancel</b>. Trades come from the trade feed; taker orders are grouped messages. All per market-minute of clean time, log scale.</p></div>
+      <div class="note"><h4>What to notice</h4><ul>
+        <li><b>15m:</b> 3,460 adds and 3,100 cancels against 30 trade messages per minute, an <b>order-to-trade ratio of about 117</b>. That average includes the quiet pre-window; the live minutes run about 10,000 adds per minute.</li>
+        <li><b>Ladder:</b> about 1,650 adds per trade. Quotes are refreshed constantly and almost never traded.</li>
+        <li>Adds ≈ cancels everywhere: total resting size stays level while individual quotes are replaced.</li>
+      </ul></div>
+    </div>
+    <div>
+      <div class="note"><h4>Why a desk cares</h4><p>The order-to-trade ratio is a standard venue health metric (European rules cap it for this reason). A high value means algorithmic makers re-pricing on a signal, here almost certainly Binance BTC. You are competing with bots that move their quotes within milliseconds of a BTC tick. Whoever is slowest is the stale quote that gets hit.</p></div>
+      <div class="callout trap"><h4>Common mistake</h4><p>Treating these as order counts. Our data is L2 (size per price level, no order IDs), so an "add" can be several orders, a modify, or a cancel-replace. These are counts of level changes, a lower bound on messages.</p></div>
+      <div class="callout next"><h4>What it leads to</h4><p>The latency budget (feed + decide + send) matters more than code speed. Stage 3 checks whether fills that arrive right after a Binance move are the toxic ones. If so, a cancel-on-Binance rule is the first strategy component.</p></div>
+      <p class="sat">Saturday: about 5,300 adds per minute on 15m live minutes; 65 % of added size cancelled within 1 s (Friday 80 %).</p>
+    </div>
+  </div>
+</article>
+
+<!-- 5 trades -->
+<article class="fig" data-img="trades">
+  <div class="fig-head"><h3>5 · Taker order size</h3><div class="tags"><span class="tag">Skill 3 · adverse selection</span><span class="tag">Skill 1 · fills</span></div></div>
+  <div class="plate"><div class="toggle"></div><img alt="Cumulative distribution of taker order size in dollars per family, log x axis" loading="lazy"><div class="cap"></div></div>
+  <div class="notes">
+    <div>
+      <div class="note"><h4>How it is computed</h4><p>Trade messages on the same token and side less than 50 ms apart form one taker order. $ = Σ size × price. Cumulative distribution, log x. n = 35,549 orders on 15m, 2,151 ladder, 822 Fed.</p></div>
+      <div class="note"><h4>What to notice</h4><ul>
+        <li>A <b>vertical cliff at $1</b> in every family. That looks like a venue minimum order size (to verify in the docs). Venue rules leave fingerprints in distributions; learn to spot them.</li>
+        <li><b>15m</b> is the leftmost curve: median $7, p99 $341. Small, retail-sized flow.</li>
+        <li><b>Ladder and Fed</b> have fat right tails: p99 $2.9k and $7.5k. Rare large orders.</li>
+        <li>On 15m, 20 % of orders hit several makers and 7.5 % walk two or more levels, yet those sweeps carry 24.5 % of the volume.</li>
+      </ul></div>
+    </div>
+    <div>
+      <div class="note"><h4>Why a desk cares</h4><p>Order size is the cheapest toxicity predictor. In most markets, larger orders are more informed and move the price more (the idea behind Kyle's λ and Easley–O'Hara). A maker who can tell a $7 nibble from a $300 sweep can keep the spread on the first and avoid the second.</p></div>
+      <div class="callout trap"><h4>Common mistake</h4><p>Counting trade messages as orders. One taker order that hits five makers produces five messages, each with its own transaction hash. Counting messages makes orders look smaller and more numerous than they are, which hides the sweeps.</p></div>
+      <div class="callout next"><h4>What it leads to</h4><p>Stage 3's headline table: markout at 1 / 5 / 30 / 60 s, split by order-size bucket and by minute of window. If large orders carry most of term ② (adverse selection), quoting small size at the touch is the strategy.</p></div>
+      <p class="sat">Saturday: 15m $7 / $55 / $289; sweeps 31.8 % of volume.</p>
+    </div>
+  </div>
+</article>
+
+<!-- 6 jumps -->
+<article class="fig" data-img="jumps">
+  <div class="fig-head"><h3>6 · Jumps in the mid</h3><div class="tags"><span class="tag">Skill 3 · regimes</span><span class="tag">Skill 5 · lead–lag</span></div></div>
+  <div class="plate"><div class="toggle"></div><img alt="Number of mid moves of at least 2, 5, 10 ticks within 1 second and within 10 seconds, per hour of clean time, per family" loading="lazy"><div class="cap"></div></div>
+  <div class="notes">
+    <div>
+      <div class="note"><h4>How it is computed</h4><p>Left: |mid(t) − mid(t − 1 s)| ≥ 2, 5, 10 ticks. Right: the same over aligned 10-second blocks. Counts per hour of clean time, log y.</p></div>
+      <div class="note"><h4>What to notice</h4><ul>
+        <li><b>15m:</b> 200 jumps per hour of ≥ 2 ticks within a second, 30 of ≥ 5, 4 of ≥ 10. The rate falls slowly with size, so big jumps are not rare.</li>
+        <li>The 10-s panel shows <i>fewer</i> 2-tick moves (about 70 per hour): several 1-s moves merge, and some revert within 10 s.</li>
+        <li><b>Ladder</b> about 2 per hour, <b>Fed</b> 0.06 per hour (3 jumps in 54 h).</li>
+      </ul></div>
+      <div class="note"><h4>Illustration (not measured)</h4><p>Say 1 in 10 of the 200 hourly 2-tick jumps hits our 100-share quote before we cancel. Each costs at least 1.5¢ per share beyond the half-tick we earn: 20 × 100 × $0.015 = <b>$30 per hour</b> of adverse selection. Our spread income has to beat that.</p></div>
+    </div>
+    <div>
+      <div class="note"><h4>Why a desk cares</h4><p>This plot gives the jump rate λ by size, the main input to the cancel rule from our toolkit:</p><div class="formula">cancel if λ · E[(|J| − h)⁺] · Q &gt; ρ</div><p>Here h is your half-spread, Q your size, and ρ what you earn by staying. On a VPS sample, 18.6 % of 15m jumps came within 10 s of a ≥ 0.01 % Binance move, against a 2.2 % base rate (n = 70, provisional). Part of λ can be seen coming.</p></div>
+      <div class="callout trap"><h4>Common mistake</h4><p>Treating every jump as a loss. A move that reverts (bounce) costs nothing, or even helps. A move that persists is what hurts. The gap between the 1-s and 10-s panels is the first hint of how much bounce there is, and the markout curve over τ measures it properly.</p></div>
+      <div class="callout next"><h4>What it leads to</h4><p>Stage 3 markouts at τ = 1–60 s separate bounce from persistent moves. Stage 4 fair value uses Binance to predict the persistent part, which is how a maker cancels before the jump rather than after.</p></div>
+      <p class="sat">Saturday: 15m 117 / 25 / 8 per hour at ≥ 2 / 5 / 10 ticks.</p>
+    </div>
+  </div>
+</article>
+
+<!-- 7 lifecycle -->
+<article class="fig" data-img="btc15_lifecycle">
+  <div class="fig-head"><h3>7 · The 15-minute window life cycle</h3><div class="tags"><span class="tag">Skill 3 · regimes</span><span class="tag">Skill 5 · fair value</span></div></div>
+  <div class="plate"><div class="toggle"></div><img alt="Six panels by minute 0 to 14 of the 15-minute window: share at 1 tick, depth within 3 ticks, taker orders per minute, distance of mid from 0.5, share with a side empty, jumps per hour" loading="lazy"><div class="cap"></div></div>
+  <div class="notes">
+    <div>
+      <div class="note"><h4>How it is computed</h4><p>Every statistic above, grouped by minute 0–14 of each 15-minute market (45 windows on Friday). Minute 0 is the window start, the moment BTC's reference price is fixed.</p></div>
+      <div class="note"><h4>What to notice</h4><ul>
+        <li><b>Minutes 0–9 are stable:</b> 97–99 % at 1 tick, $1.5–1.9k within 3 ticks, 30–45 taker orders per minute.</li>
+        <li><b>From minute 10 it falls apart:</b> depth goes to about $0 by minute 14, one side is empty 83 % of the time, jumps rise from 600 to 1,900 per hour, and taker orders peak at 100 per minute in minute 13.</li>
+        <li>|mid − 0.5| climbs from 0.06 to 0.37: by the end the outcome is mostly known.</li>
+      </ul></div>
+      <div class="note"><h4>The maths behind the collapse</h4><p>P(Up) = Φ(z) with z = ln(S/S₀) / (σ√τ). Take a 5 bp BTC move at z = 0 and σ ≈ 26.5 bp per 15 min (volatility report):</p><div class="formula">τ = 15 min: σ√τ = 26.5 bp → Δz = 0.19 → ΔP = 7.5¢</div><div class="formula">τ = 1 min:  σ√τ = 6.8 bp  → Δz = 0.73 → ΔP = 26.8¢</div><p>The same BTC move is worth about 3.5× more ticks near expiry. That is the binary option's <b>gamma</b> blowing up. Makers withdraw because one Binance tick now moves fair value by many Polymarket ticks.</p></div>
+    </div>
+    <div>
+      <div class="note"><h4>Why a desk cares</h4><p>This is a <b>regime change inside a single instrument</b>, driven by the clock. Averaging any statistic over the whole window mixes two different markets. Practitioners segment by regime first: here, minute of window; elsewhere, time to an event, session open, or volatility state.</p></div>
+      <div class="callout trap"><h4>Common mistake</h4><p>Trusting the last minute's numbers. Minute 14 has only 392 clean seconds from 18 tokens, because many windows are already one-sided or dead. It is a small, survivor-biased sample. Always show n per bucket; the report does.</p></div>
+      <div class="callout next"><h4>What it leads to</h4><p>Working hypothesis: <b>quote minutes 0–9 only</b>, pull at minute 10. Stage 3 tests it with markouts by minute. The volatility report agrees: σ in log-odds rises 8× from minute 0 to 14. The 30-minute pre-window (88 % at 1 tick, mid ≈ 0.50, very little flow) is a separate question: is anyone trading there?</p></div>
+      <p class="sat">Saturday: same shape. One side empty 72 % in minute 14, depth $1,366 → $0.</p>
+    </div>
+  </div>
+</article>
+
+<!-- 8 ladder -->
+<article class="fig" data-img="ladder">
+  <div class="fig-head"><h3>8 · The daily ladder by moneyness and time to expiry</h3><div class="tags"><span class="tag">Skill 5 · fair value</span><span class="tag">Skill 1 · liquidity</span></div></div>
+  <div class="plate"><div class="toggle"></div><img alt="Four panels: share at 1 tick and depth within 3 ticks, against distance of strike from BTC price and against hours to 12:00 ET" loading="lazy"><div class="cap"></div></div>
+  <div class="notes">
+    <div>
+      <div class="note"><h4>How it is computed</h4><p>Moneyness = |strike / BTC − 1|, using a BTC price implied from the ladder itself on Friday (no Binance feed yet). Hours to 12:00 ET is the resolution time. Each bucket is time-weighted; the band is p25–p75.</p></div>
+      <div class="note"><h4>What to notice</h4><ul>
+        <li><b>Near the money (&lt; 1 %):</b> at 1 tick only 29–43 % of the time and at ≥ 2 ticks 38–56 %, median 1.6–2.1 ticks. These are the only books in our batch where the spread is not stuck at the minimum.</li>
+        <li><b>Beyond 5 %:</b> 2 % at 1 tick (97 % sub-cent), $55 of depth. Dead.</li>
+        <li>Depth peaks at strikes 1–2 % away ($3.3k), not at the money.</li>
+        <li>The time-to-expiry panels zig-zag (22 % at 1 tick at 3–6 h, 7 % at 12–24 h).</li>
+      </ul></div>
+    </div>
+    <div>
+      <div class="note"><h4>Why a desk cares</h4><p>The ladder is a strip of <b>digital options</b> on BTC at 12:00 ET. Options desks don't quote in price; they quote in <b>volatility</b>, so that one quote rule works across strikes and maturities. A 2-tick spread at the money and a 2-tick spread on a 4 % strike are very different risks, and expressing the width in vol points (or in units of fair-value uncertainty) makes them comparable.</p></div>
+      <div class="callout trap"><h4>Common mistake</h4><p>Reading the zig-zag as an effect of time. With one day of data, each time bucket holds <i>different strikes</i> (2–21 tokens each). The bucket at 12–24 h is mostly far strikes, which drags its 1-tick share down. That is a <b>composition effect</b>, a cousin of Simpson's paradox. The fix is a 2-D grid (moneyness × time) or a model, and more days.</p></div>
+      <div class="callout next"><h4>What it leads to</h4><p>Stage 4 fair value: P(S<sub>T</sub> &gt; K) = Φ(d₂) per strike, using the volatility report's σ and checked for monotonicity across strikes (a higher strike can never be worth more; a violation is an arbitrage). Then we quote near-money strikes 3–48 h out at a width set by the model, not by the queue.</p></div>
+      <p class="sat">Saturday: only strikes ≥ 24 h from expiry were recorded; near-money ones were deeper ($2.9k within 3 ticks).</p>
+    </div>
+  </div>
+</article>
+
+<section>
+  <h2>Verdict per family</h2>
+  <div class="verdicts">
+    <div class="verdict"><span class="eyebrow">btc_15m</span><span class="call">Queue game, minutes 0–9 only</span><p>Tick binds, touch is thin against sweeps, quotes flicker, jumps follow Binance. Viable only if early fills are not toxic and we cancel on Binance moves. Stage 3 decides.</p></div>
+    <div class="verdict"><span class="eyebrow">btc_daily_ladder</span><span class="call">Fair-value quoting, near the money, 3–48 h out</span><p>The only books where width is a choice. Flow is rare and lumpy, so earnings depend on quoting the right price at a sensible width. Stage 4 matters more than queue modelling here.</p></div>
+    <div class="verdict"><span class="eyebrow">fed_dec_2026</span><span class="call">Rewards yield, not market making</span><p>Pinned and deep, no intraday adverse selection, almost no flow. About 0.03–0.16 % per day on a $10k quote from rewards, with capital locked until 2026-12-09 and one scheduled jump at the decision.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>Five habits this stage teaches</h2>
+  <div class="habits">
+    <div><b>Weight by time, not by events.</b> Ask what the book looked like whenever you would have been there. Event-weighting over-counts busy minutes about 8×.</div>
+    <div><b>Segment by regime before you average.</b> Minute of window, moneyness, time to expiry, live or dead. A pooled number can describe no real moment.</div>
+    <div><b>Dollars, not shares; orders, not messages.</b> Convert to $, and to p(1−p) for risk. Group messages into taker orders before measuring size.</div>
+    <div><b>Know what your data can't see.</b> L2 has no order IDs, so queue position, resting time and "adds" are inferred, and our numbers are bounds. State that next to the result.</div>
+    <div><b>Show n, mark provisional.</b> At a desk, a number without its sample size and its regime is treated as if it doesn't exist.</div>
+  </div>
+</section>
+
+<p class="foot">Sources: <span class="mono">reports/2026-11-06/shape/shape.md</span>, <span class="mono">reports/2026-11-07/shape/shape.md</span>, <span class="mono">research/shape.md</span>. Volatility figures from <span class="mono">research/volatility.md</span>. Generated with <span class="mono">polymm shape</span> on top of <span class="mono">polymm replay</span> and <span class="mono">polymm quality</span>.</p>
+
+</div>
+
+<script>
+(function () {
+  var days = [
+    { key: "fri", label: "Fri · laptop · 11 h", cap: "Friday 2026-11-06, 13:10–00:25 UTC, laptop recorder" },
+    { key: "sat", label: "Sat · VPS · 2 h 20 min", cap: "Saturday 2026-11-07, 09:35–11:55 UTC, VPS recorder (smaller sample)" }
+  ];
+  document.querySelectorAll(".fig").forEach(function (fig) {
+    var name = fig.getAttribute("data-img");
+    var img = fig.querySelector("img"), cap = fig.querySelector(".cap"), bar = fig.querySelector(".toggle");
+    function show(d) {
+      img.src = "img/" + d.key + "/" + name + ".png";
+      cap.textContent = d.cap;
+      bar.querySelectorAll("button").forEach(function (b) { b.setAttribute("aria-pressed", b.dataset.k === d.key ? "true" : "false"); });
+    }
+    days.forEach(function (d) {
+      var b = document.createElement("button");
+      b.type = "button"; b.textContent = d.label; b.dataset.k = d.key;
+      b.addEventListener("click", function () { show(d); });
+      bar.appendChild(b);
+    });
+    show(days[0]);
+  });
+})();
+</script>
