@@ -197,6 +197,21 @@ def cmd_vol(args) -> int:
     return 0
 
 
+def cmd_fair(args) -> int:
+    from .fair.run import FairConfig, run_fair
+
+    # Why per-day folders under --root: each day needs its replay, strict windows and σ
+    # (`polymm quality` + `polymm vol` with --out <root>/<date>); fair reads them, and the
+    # first date is training only (walk-forward).
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+    fc = FairConfig(dates=sorted(args.dates), root=Path(args.root), spot_root=Path(args.spot_data),
+                    data_dirs=[Path(d) for d in args.data], plot_dir=Path(args.plots_out), fit_tau=args.fit_tau,
+                    refresh_ref=not args.no_refresh, plots=not args.no_plots)
+    R = run_fair(fc)
+    print(f"fair {', '.join(fc.dates)}: {R['oos_rows']:,} held-out rows in {R['seconds']} s; report {fc.root / 'summary.md'}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="polymm")
     p.add_argument("-c", "--config", default="config.yaml")
@@ -243,6 +258,15 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--strict", default=None, help="clean_windows_strict.parquet (default: reports/<date>/clean_windows_strict.parquet)")
     v.add_argument("--out", default=None, help="output folder (default: reports/<date>/vol)")
     v.add_argument("--no-plots", action="store_true", help="skip PNGs (matplotlib not needed)")
+    fv = sub.add_parser("fair", help="fair value v1: inputs, candidates, walk-forward blend, scores, report (step 6)")
+    fv.add_argument("dates", nargs="+", help="YYYY-MM-DD ... ; the first is training only")
+    fv.add_argument("--root", default="reports/fair", help="per-day folders with replay/, clean_windows_strict.parquet, vol/")
+    fv.add_argument("--spot-data", default="data_vps", help="root holding spot/ and backfill/")
+    fv.add_argument("--data", nargs="+", default=["data", "data_vps"], help="dataset roots with reference/markets")
+    fv.add_argument("--plots-out", default="research/fair_value", help="PNG folder")
+    fv.add_argument("--fit-tau", type=int, default=30, help="horizon (s) the blend weight is fitted on")
+    fv.add_argument("--no-refresh", action="store_true", help="reuse the cached Gamma reference")
+    fv.add_argument("--no-plots", action="store_true")
     args = p.parse_args(argv)
     if args.cmd == "replay" and not args.validate_only and not args.out:
         p.error("replay: --out is required unless --validate-only")
@@ -251,6 +275,7 @@ def main(argv: list[str] | None = None) -> int:
         "backfill": cmd_backfill, "backfill-spot": cmd_backfill_spot, "replay": cmd_replay, "quality": cmd_quality,
         "shape": cmd_shape,
         "vol": cmd_vol,
+        "fair": cmd_fair,
     }[args.cmd](args)
 
 

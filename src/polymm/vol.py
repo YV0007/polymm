@@ -982,7 +982,12 @@ def implied_vs_realized(grid: pl.DataFrame, quotes_1s: pl.DataFrame, sigma_1s: p
     g = g.join(s0, on="start_s", how="inner").filter(pl.col("s0_gap") <= 5)
     if not g.height:
         return pl.DataFrame(), pl.DataFrame()
-    g = g.with_columns((pl.col("start_s") + WINDOW_S - pl.col("sec")).cast(pl.Float64).alias("tau_s"),
+    # Why τ_eff, not τ (fixed 2026-11-08, D-023): the window settles on the Chainlink 60 s
+    # average ending at T, which removes variance from the last minute: τ_eff = τ − 40 for
+    # τ > 60 s, τ³/(3·60²) inside it. With plain τ the implied σ came out biased low, most
+    # late in the window.
+    tau = (pl.col("start_s") + WINDOW_S - pl.col("sec")).cast(pl.Float64)
+    g = g.with_columns(pl.when(tau > 60).then(tau - 40.0).otherwise(tau ** 3 / (3 * 60.0 ** 2)).alias("tau_s"),
                        (pl.col("s_t") / pl.col("s_0")).log().alias("ret"))
     pts = implied_sigma_point(g["mid"].to_numpy(), g["s_t"].to_numpy(), g["s_0"].to_numpy(), g["tau_s"].to_numpy())
     g = g.with_columns(pl.Series("sigma_point", pts)).with_columns((pl.col("sigma_point") * math.sqrt(WINDOW_S) * 1e4).alias("point_15m_bp"),
