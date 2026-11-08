@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 USER_AT=root@$HOST
 ssh "$USER_AT" 'id polymm >/dev/null 2>&1 || useradd -m -s /bin/bash polymm; install -d -o polymm -g polymm /home/polymm/polymm'
 rsync -az --delete \
-  --exclude data --exclude logs --exclude .venv --exclude reports --exclude '__pycache__' --exclude .DS_Store \
+  --exclude data --exclude data_vps --exclude .claude --exclude .git --exclude logs --exclude .venv --exclude reports --exclude '__pycache__' --exclude .DS_Store \
   "$ROOT/" "$USER_AT:/home/polymm/polymm/"
 ssh "$USER_AT" 'chown -R polymm:polymm /home/polymm/polymm'
 if [[ "${2:-}" == restart ]]; then

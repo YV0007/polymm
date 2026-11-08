@@ -2,7 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.polymm.nightly-pull</string>
+  <!-- Why uv first: macOS privacy protection (TCC) blocks /bin/bash (and caffeinate)
+       started by launchd from reading ~/Desktop ("Operation not permitted", exit 126).
+       uv is the program the recorder job runs as and already holds Desktop access;
+       `uv run CMD` just runs CMD, so bash, rsync and ssh run under that grant.
+       caffeinate -i inside keeps the Mac awake until the pull and prune finish. -->
   <key>ProgramArguments</key><array>
+    <string>/Users/macbook/.local/bin/uv</string><string>run</string><string>--project</string>
+    <string>/Users/macbook/Desktop/POLY MM</string>
+    <string>/usr/bin/caffeinate</string><string>-i</string>
     <string>/bin/bash</string>
     <string>/Users/macbook/Desktop/POLY MM/ops/nightly_pull.sh</string>
   </array>
