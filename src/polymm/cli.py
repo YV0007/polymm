@@ -1,4 +1,4 @@
-"""Command line: `polymm universe | record | audit | backfill | backfill-spot | replay | quality | shape | vol`."""
+"""Command line: `polymm universe | record | audit | backfill | backfill-spot | replay | quality | shape | vol | fair | markouts`."""
 from __future__ import annotations
 
 import argparse
@@ -212,6 +212,22 @@ def cmd_fair(args) -> int:
     return 0
 
 
+def cmd_markouts(args) -> int:
+    from .markouts.run import MarkoutConfig, run_markouts
+
+    # Why on top of the fair day folders: markouts must use the same rebuilt books and clean
+    # windows as the fair value they are measured against; the first date is training only
+    # (it fixes τ* and trains the first model fold).
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+    mc = MarkoutConfig(dates=sorted(args.dates), fair_root=Path(args.fair_root), out=Path(args.out),
+                       data_dirs=[Path(d) for d in args.data], plot_dir=Path(args.plots_out), plots=not args.no_plots,
+                       reuse=args.reuse, spot_root=Path(args.spot_data), fair_oos=not args.in_sample_fair)
+    R = run_markouts(mc)
+    print(f"markouts {', '.join(mc.dates)}: {R['fills_used']:,} fills, τ* {R['tau_star']}, Gate A {R['verdict']} "
+          f"{R['verdict_family']} in {R['seconds']} s; report {mc.out / 'summary.md'}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="polymm")
     p.add_argument("-c", "--config", default="config.yaml")
@@ -267,6 +283,16 @@ def main(argv: list[str] | None = None) -> int:
     fv.add_argument("--fit-tau", type=int, default=30, help="horizon (s) the blend weight is fitted on")
     fv.add_argument("--no-refresh", action="store_true", help="reuse the cached Gamma reference")
     fv.add_argument("--no-plots", action="store_true")
+    mk = sub.add_parser("markouts", help="adverse selection: fill table, markouts, signature, slices, model, Gate A (stage 4)")
+    mk.add_argument("dates", nargs="+", help="YYYY-MM-DD ... ; the first is training only (fixes τ*)")
+    mk.add_argument("--fair-root", default="reports/fair", help="fair-value day folders (replay/, clean windows, reference/)")
+    mk.add_argument("--out", default="reports/markouts")
+    mk.add_argument("--data", nargs="+", default=["data_vps", "data"], help="event stores, in preference order")
+    mk.add_argument("--spot-data", default="data_vps", help="root holding spot/ (for the walk-forward fair series)")
+    mk.add_argument("--plots-out", default="research/adverse_selection")
+    mk.add_argument("--reuse", action="store_true", help="reuse per-day markouts.parquet and fair_oos.parquet")
+    mk.add_argument("--in-sample-fair", action="store_true", help="use reports/fair/<date>/fair.parquet (final fit; leaks, for comparison only)")
+    mk.add_argument("--no-plots", action="store_true")
     args = p.parse_args(argv)
     if args.cmd == "replay" and not args.validate_only and not args.out:
         p.error("replay: --out is required unless --validate-only")
@@ -276,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
         "shape": cmd_shape,
         "vol": cmd_vol,
         "fair": cmd_fair,
+        "markouts": cmd_markouts,
     }[args.cmd](args)
 
 
