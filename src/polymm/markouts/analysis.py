@@ -238,16 +238,27 @@ def final_params(f: pl.DataFrame, tstar: dict[str, int], lam_rel: float = 0.01, 
 
 def decision_curve(p: pl.DataFrame, fracs=tuple(np.round(np.arange(0, 0.95, 0.05), 2))) -> pl.DataFrame:
     """Drop the fills each scorer likes least, keep the rest: what is the kept fills' realized edge?
-    Ties (const) are broken at random, which is what 'no information' means."""
+    Ties (const) are broken at random, which is what 'no information' means.
+    Why rank within each held-out day: every day has its own walk-forward fit, so the
+    predictions of different days carry different intercepts (const was −0.05 on 11-07 and
+    −0.19 on 11-08). Ranking the pooled days drops whole days by their intercept, which made
+    the 'no information' line throw away the good day first (fixed 2026-11-09). A live rule
+    also only compares fills of the same day against each other."""
     rng = np.random.default_rng(0)
     out = []
     for fam in p["family"].unique().to_list():
         d = p.filter(pl.col("family") == fam)
         M = d["M"].to_numpy() + d["rebate_c"].to_numpy()
         sz = d["size"].to_numpy()
+        day = d["date"].to_numpy() if "date" in d.columns else np.zeros(d.height)
         for sc in ("pred_const", "pred_gap", "pred_ridge"):
             score = d[sc].to_numpy() + rng.uniform(0, 1e-9, d.height)
-            order = np.argsort(-score)
+            # within-day rank in [0, 1): 0 = the fill this scorer likes best that day
+            pct = np.empty(d.height)
+            for u in np.unique(day):
+                ix = np.flatnonzero(day == u)
+                pct[ix[np.argsort(-score[ix])]] = np.arange(ix.size) / ix.size
+            order = np.argsort(pct, kind="stable")
             for q in fracs:
                 keep = order[: max(1, int(round(len(order) * (1 - q))))]
                 out.append({"family": fam, "scorer": sc[5:], "drop": float(q), "kept": len(keep),

@@ -10,7 +10,7 @@ An independent code audit ran before this version (§9).
 Every public trade is somebody's maker fill, so we measured the fills that an average resting order got: 233,202 fills, about 4.6 M USD notional, in three families.
 In **BTC 15-minute**, the average maker captures **0.83 ¢** per share at the fill and gives **all of it back within one second**: $M(1\,\text{s}) = +0.04 \pm 0.07$ ¢. Weighted by size, it is $-0.29 \pm 0.14$ ¢ already at 1 s, because larger takers are more informed.
 The maker rebate (0.26 ¢) is roughly what keeps the average maker at zero, and the sign changes from day to day (including the rebate: 11-07 $-0.05$ ¢, 11-08 $+0.60$ ¢).
-The flow is not uniform. Features known **before** a fill separate good fills from bad ones out of sample: dropping the half of fills a ridge model likes least lifts the edge of the kept half from $+0.36$ to $+1.22$ ¢ per share at 1 s, and from $-0.07$ to $+1.55$ ¢ at 60 s.
+The flow is not uniform. Features known **before** a fill separate good fills from bad ones out of sample: dropping the half of fills a ridge model likes least lifts the edge of the kept half from $+0.36$ to $+1.21$ ¢ per share at 1 s, and from $-0.07$ to $+1.55$ ¢ at 60 s.
 **Gate A: GO (provisional) for BTC 15-minute, on one slice: quoted spread > 5 ¢.** It was chosen on the training day and was positive at 95 % on both held-out days, at 1 s and at 60 s.
 The daily ladder and Fed are **inconclusive**: too few fills to fix τ*, and almost no decay inside 60 s.
 
@@ -109,17 +109,20 @@ The target is the edge of a fill, $\hat M(\tau \mid z)$, equivalently $\hat a = 
 
 | BTC 15-minute, held out, edge incl. rebate (¢) | all fills | drop the worst 25 % | drop the worst 50 % |
 |---|---|---|---|
-| τ* = 1 s, random drop | +0.36 | +0.28 | +0.12 |
-| τ* = 1 s, fair-value gap only | +0.36 | +0.74 | +1.05 |
-| τ* = 1 s, ridge (12 features) | +0.36 | +0.81 | **+1.22** |
-| 60 s, fair-value gap only | −0.07 | +0.74 | +0.82 |
-| 60 s, ridge | −0.07 | +0.71 | **+1.55** |
+| τ* = 1 s, random drop | +0.36 | +0.37 | +0.36 |
+| τ* = 1 s, fair-value gap only | +0.36 | +0.75 | +1.06 |
+| τ* = 1 s, ridge (12 features) | +0.36 | +0.81 | **+1.21** |
+| 60 s, random drop | −0.07 | −0.13 | −0.10 |
+| 60 s, fair-value gap only | −0.07 | +0.52 | +1.02 |
+| 60 s, ridge | −0.07 | +0.69 | **+1.55** |
+
+*Fixed 2026-11-09:* fills are now ranked **within each held-out day**. Each day has its own walk-forward fit, so the predictions of different days carry different intercepts. The first version ranked the two days pooled, so the "random drop" line threw away 11-08, the good day, first, and fell to +0.12 ¢. It is now flat, as a no-information line must be. The model lines barely moved.
 
 - **Out-of-sample fit:** at 1 s, correlation 0.27 and $R^2 = 0.079$ against the constant (gap alone: 0.19 / 0.040). At 60 s, 0.10 to 0.11 / 0.010.
 - **Largest coefficients (per SD):** queue imbalance (about −0.8 ¢), then flow in the last 5 s, spread, distance from 0.5, and the BTC move. All are in `summary.md` and `as_params.json`.
 - **Reading the curves:** low $R^2$ is normal for markouts, because the noise per fill is large. The decision curve is the measure that matters: *if we had refused the fills the model disliked, what would the rest have earned?*
 
-**Leakage check.** The fair-value file from stage 3 (`reports/fair/<date>/fair.parquet`) is the *final* fit on all three days. Run with it, the 60 s gap scorer looked much better: dropping half the fills gave +2.13 ¢ instead of +0.82 ¢ (correlation 0.13 instead of 0.11). This stage therefore rebuilds the fair series walk-forward (`markouts/fair_oos.py`); `--in-sample-fair` reproduces the leaky version for comparison.
+**Leakage check.** The fair-value file from stage 3 (`reports/fair/<date>/fair.parquet`) is the *final* fit on all three days. Run with it, the 60 s gap scorer looked much better: dropping half the fills gave +2.13 ¢ instead of +0.82 ¢ (both with the first, pooled ranking; correlation 0.13 instead of 0.11). This stage therefore rebuilds the fair series walk-forward (`markouts/fair_oos.py`); `--in-sample-fair` reproduces the leaky version for comparison.
 
 > **Note (skill 2, honest backtests):** this is the classic "fit on all days, score some of them" leak. It's small per parameter but large in the tail that the decision curve selects. Every number here labelled held-out uses only parameters fitted before that day, including the upstream stage's parameters.
 
