@@ -17,7 +17,9 @@ Sections (each a list of row objects, so every cell can be traced on the page):
     model_metrics   expectation model vs baselines (R², correlation)
     decision        drop the worst x % of fills by the model's score: edge of what is kept
     gate            Gate A verdict per family + the reasons
-    checks          pass/fail of every automated check we run
+    checks          pass/fail of every automated check we run (incl. recorder health per day)
+    recorder        per UTC day from the `health` table: holes, restarts, parse errors, WS cuts,
+                    event-loop freezes, A1 mirror kept share
     history         the headline figures at every past export (for trends)
 """
 from __future__ import annotations
@@ -70,6 +72,82 @@ def collection(data_dirs: dict[str, Path]) -> list[dict]:
                               + _gb(root / "raw" / "ws_market" / f"dt={d}") + _gb(root / "raw" / "binance" / f"dt={d}"), 3)
             days[d] = row
     return [days[d] for d in sorted(days)]
+
+
+_HEALTH_COUNTERS = ["parse_errors", "reconnects", "spot_reconnects", "gaps", "rows_delta", "mirror_dropped", "mirror_kept"]
+
+
+def recorder_health(data_dirs: dict[str, Path]) -> list[dict]:
+    """Per UTC day, from the recorder's own `health` table (one row every 10 s): did it
+    run, did it parse, how often did the venue cut the feed, did our event loop freeze.
+
+    Why from `health` and not logs: the table travels with the data in the nightly pull,
+    so the dashboard can judge a day without logging into the server.
+    Why diffs: the counters are cumulative since process start; a restart (uptime goes
+    down) restarts them at 0, so on that row the delta is the new value itself.
+    Same source rule as `collection`: a day on the server copy beats the laptop copy."""
+    out: dict[str, dict] = {}
+    for src, root in data_dirs.items():
+        base = root / "events" / "health"
+        for dd in sorted(base.glob("dt=*")) if base.exists() else []:
+            day = dd.name[3:]
+            if day in out and out[day]["source"] == "server":
+                continue
+            files = sorted(dd.rglob("*.parquet"))
+            if not files:
+                continue
+            # Why diagonal_relaxed: older files lack the columns added later (records.py rule).
+            h = pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed").sort("ts_ns")
+            restart = pl.col("uptime_s").diff().fill_null(0) < 0
+            deltas = [pl.when(restart).then(pl.col(c)).otherwise(pl.col(c).diff()).fill_null(0).clip(0).sum().alias(c)
+                      for c in _HEALTH_COUNTERS if c in h.columns]
+            agg = h.select(
+                pl.len().alias("rows"),
+                ((pl.col("ts_ns").diff() / 1e9).max()).alias("max_gap_s"),
+                restart.sum().alias("restarts"),
+                pl.col("loop_lag_max_ms").max().alias("lag_max_ms") if "loop_lag_max_ms" in h.columns else pl.lit(None).alias("lag_max_ms"),
+                (pl.col("loop_lag_max_ms") > 1000).sum().alias("lag_over_1s") if "loop_lag_max_ms" in h.columns else pl.lit(None).alias("lag_over_1s"),
+                *deltas,
+            ).row(0, named=True)
+            mk, md = agg.get("mirror_kept") or 0, agg.get("mirror_dropped") or 0
+            out[day] = {
+                "date": day, "source": src, "health_rows": agg["rows"],
+                "max_gap_s": round(agg["max_gap_s"] or 0, 1), "restarts": agg["restarts"],
+                "parse_errors": agg.get("parse_errors"), "ws_cuts": agg.get("reconnects"),
+                "spot_cuts": agg.get("spot_reconnects"), "gaps": agg.get("gaps"),
+                "loop_lag_max_ms": round(agg["lag_max_ms"], 1) if agg["lag_max_ms"] is not None else None,
+                "loop_lag_over_1s": agg["lag_over_1s"],
+                "mirror_kept_pct": round(100 * mk / (mk + md), 3) if mk + md else None,
+            }
+    return [out[d] for d in sorted(out)]
+
+
+def recorder_checks(rows: list[dict]) -> list[dict]:
+    """One pass/fail row per day and question. Thresholds, and why:
+    - health gap ≤ 60 s: rows come every 10 s; a planned deploy restart leaves a ~30 s hole
+      (measured 11-07/11-08), anything longer means the recorder was down or frozen.
+    - parse errors = 0: any error means the venue changed a message format.
+    - WS cuts ≤ 24/day: venue-side `1013 slow consumer` cuts on btc_15m (D-022) run at ~15–20/day,
+      each a ~1 s hole; more than one an hour means the feed is degrading.
+    - event loop never frozen > 1 s: a freeze delays ts_recv on every message behind it.
+    - mirror kept < 1 %: A1 assumes outcome 1 is almost always the exact mirror of outcome 0."""
+    chk = []
+    for r in rows:
+        d = r["date"]
+        chk.append({"area": "recorder", "check": f"{d}: health rows every 10 s, longest hole ≤ 60 s",
+                    "result": f"{r['health_rows']} rows · longest hole {r['max_gap_s']} s · {r['restarts']} restarts",
+                    "ok": r["max_gap_s"] <= 60})
+        chk.append({"area": "recorder", "check": f"{d}: parse errors = 0", "result": str(r["parse_errors"]), "ok": r["parse_errors"] == 0})
+        chk.append({"area": "recorder", "check": f"{d}: venue WS cuts ≤ 24 (spot cuts)",
+                    "result": f"{r['ws_cuts']} ({r['spot_cuts']})", "ok": (r["ws_cuts"] or 0) <= 24})
+        if r["loop_lag_max_ms"] is not None:
+            chk.append({"area": "recorder", "check": f"{d}: event loop never frozen > 1 s",
+                        "result": f"max {r['loop_lag_max_ms']:.0f} ms · {r['loop_lag_over_1s']} intervals > 1 s",
+                        "ok": r["loop_lag_max_ms"] <= 1000})
+        if r["mirror_kept_pct"] is not None:
+            chk.append({"area": "recorder", "check": f"{d}: A1 outcome-1 rows kept < 1 %",
+                        "result": f"{r['mirror_kept_pct']} %", "ok": r["mirror_kept_pct"] < 1})
+    return chk
 
 
 def quality(day_dirs: list[Path]) -> tuple[list[dict], list[dict]]:
@@ -193,6 +271,8 @@ def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict
         chk.append({"area": "fair value", "check": "no input received after t (lookahead)", "result": "asserted on every row", "ok": "inputs " in txt})
     for d, c in sorted(checks.items()):
         chk.append({"area": "adverse selection", "check": f"fills {d}: trade side consistent with the book", "result": f"{c.get('sign_ok', 0) * 100:.1f} %", "ok": c.get("sign_ok", 0) >= 0.95})
+    rec = recorder_health(data_dirs)
+    chk += recorder_checks(rec)
     chk.append({"area": "code", "check": "test suite", "result": t["summary"], "ok": bool(t["passed"]) and not t["failed"]})
     # history: one snapshot per data date (a rerun on the same data replaces it)
     hist_path = out.parent / "history.json"
@@ -218,6 +298,7 @@ def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict
         "gate": [{"family": f, "verdict": v, "tau_star_s": gate.get("tau_star", {}).get(f),
                   "reasons": " | ".join(x for x in gate.get("verdict_why", []) if f in x)} for f, v in gate.get("verdict_family", {}).items()],
         "checks": chk,
+        "recorder": rec,
         "history": hist,
     }
     out.parent.mkdir(parents=True, exist_ok=True)
