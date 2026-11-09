@@ -16,12 +16,14 @@ Each fact lives in exactly one place (decision D-018). Don't copy between them; 
 | **Plans, today's steps, status, ops/cost** | Notion → *MM / Polymarket MM — Project* (page id `40fe45929c1e8104acb8fb8a9ade3a04`) → Plan → *Global plan* (`40fe45929c1e81b9983dd81a6aa613ff`), *Daily plan* (`40fe45929c1e81d883c4fa0b448339e3`) |
 | **Data** | `data/` locally, `/home/polymm/polymm/data/` on the VPS (`ssh polymm`). Never in Notion or git. |
 | **Reports** | `reports/`, `research/`; Notion gets at most a one-line summary + path |
+| **Dashboard** (review surface) | https://claude.ai/artifact/Lp6FVttHUNMFGWziGZ5uBk, refreshed every morning; how to add a section: `docs/DASHBOARD.md` |
 
 **At the start of a chat:** read `docs/DECISIONS.md` and today's section of the Notion Daily plan.
 Other chats may be working in parallel (`git status`, recent commits): don't touch files they are changing.
 
 **When you make a decision:** add a `D-NNN` entry to `docs/DECISIONS.md` in the same commit as the code.
 **When you finish a plan step:** tick it in the Notion Daily plan.
+**When a result is worth tracking:** add it to the dashboard in the same session (`docs/DASHBOARD.md`), keeping it to the stage's headline numbers and key charts.
 
 ---
 

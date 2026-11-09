@@ -228,6 +228,20 @@ def cmd_markouts(args) -> int:
     return 0
 
 
+def cmd_dashboard(args) -> int:
+    from .dashboard import build
+
+    # Why a separate command: the research dashboard reads ONE JSON file; this gathers the
+    # latest fair-value and markout outputs, row counts, checks and tests into it.
+    out = Path(args.out)
+    d = build(Path("."), out, Path(args.fair_root), Path(args.markouts_root),
+              {"laptop": Path(args.laptop_data), "server": Path(args.server_data)}, tests=not args.no_tests)
+    k = d["kpis"][0]
+    print(f"dashboard data -> {out} ({out.stat().st_size / 1e3:.0f} kB): data through {k['data_through']}, "
+          f"tests {k['tests_passed']} passed / {k['tests_failed']} failed, Gate A {k['gate_verdict']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="polymm")
     p.add_argument("-c", "--config", default="config.yaml")
@@ -293,6 +307,13 @@ def main(argv: list[str] | None = None) -> int:
     mk.add_argument("--reuse", action="store_true", help="reuse per-day markouts.parquet and fair_oos.parquet")
     mk.add_argument("--in-sample-fair", action="store_true", help="use reports/fair/<date>/fair.parquet (final fit; leaks, for comparison only)")
     mk.add_argument("--no-plots", action="store_true")
+    db = sub.add_parser("dashboard", help="gather all dashboard numbers into one JSON file")
+    db.add_argument("--out", default="reports/dashboard/dashboard_data.json")
+    db.add_argument("--fair-root", default="reports/fair")
+    db.add_argument("--markouts-root", default="reports/markouts")
+    db.add_argument("--laptop-data", default="data")
+    db.add_argument("--server-data", default="data_vps")
+    db.add_argument("--no-tests", action="store_true", help="skip running the test suite")
     args = p.parse_args(argv)
     if args.cmd == "replay" and not args.validate_only and not args.out:
         p.error("replay: --out is required unless --validate-only")
@@ -303,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
         "vol": cmd_vol,
         "fair": cmd_fair,
         "markouts": cmd_markouts,
+        "dashboard": cmd_dashboard,
     }[args.cmd](args)
 
 

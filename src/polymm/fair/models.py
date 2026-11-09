@@ -37,9 +37,13 @@ def norm_cdf(x: np.ndarray) -> np.ndarray:
     return np.where(np.isnan(x), np.nan, out)
 
 
-def _phi_logodds(d: pl.Expr) -> pl.Expr:
-    p = d.map_batches(lambda s: pl.Series(norm_cdf(s.to_numpy())), return_dtype=pl.Float64)
-    return logit(p)
+def _phi_logodds_np(d: np.ndarray) -> np.ndarray:
+    """log-odds of Φ(d), with the same clip as `logit`. Why numpy on the eager frame and not a
+    polars UDF: several UDFs in one with_columns run in parallel threads, and polars' lazy numpy
+    import is not thread-safe there (a run on 2026-11-09 died with "'module' object does not
+    support item assignment"). A plain column-by-column loop has no threads to race."""
+    p = np.clip(norm_cdf(d), P_CLIP, 1 - P_CLIP)
+    return np.log(p / (1 - p))
 
 
 def tau_eff_15m(tau: pl.Expr) -> pl.Expr:
@@ -111,13 +115,9 @@ def add_models(g: pl.DataFrame) -> pl.DataFrame:
         both(_d_15m("S_zero", "A_known_zero", "sigma_s", b0), _d_ladder("S_zero", "sigma_s"), "d_or_zero"),
         both(_d_15m("S_lead1", "A_known", "sigma_s", b0), _d_ladder("S_lead1", "sigma_s"), "d_or_lead1"),
     )
-    return g.with_columns(
-        _phi_logodds(pl.col("d")).alias("x_model"),
-        _phi_logodds(pl.col("d_or_sigma")).alias("x_or_sigma"),
-        _phi_logodds(pl.col("d_or_basis")).alias("x_or_basis"),
-        _phi_logodds(pl.col("d_or_zero")).alias("x_or_zero"),
-        _phi_logodds(pl.col("d_or_lead1")).alias("x_or_lead1"),
-    )
+    pairs = (("d", "x_model"), ("d_or_sigma", "x_or_sigma"), ("d_or_basis", "x_or_basis"),
+             ("d_or_zero", "x_or_zero"), ("d_or_lead1", "x_or_lead1"))
+    return g.with_columns([pl.Series(x, _phi_logodds_np(g[dc].cast(pl.Float64).to_numpy()), nan_to_null=True) for dc, x in pairs])
 
 
 # ---- F6 helper: anchor the model to the book's level ------------------------------------------------
