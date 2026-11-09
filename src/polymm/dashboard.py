@@ -208,7 +208,52 @@ def run_tests(repo: Path) -> dict:
     return {"passed": passed, "failed": failed, "summary": last}
 
 
-def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict[str, Path], tests: bool = True) -> dict:
+def queue_section(q_root: Path) -> tuple[dict, dict, list[dict]]:
+    """Stage 5 (D-026): BTC 15m fill probability, toxicity and value by placement type and queue
+    position, latency, our Gate A slice, plus the Q0 checks. Reads reports/queue only."""
+    g = json.loads((q_root / "gate_ours.json").read_text()) if (q_root / "gate_ours.json").exists() else {}
+    if not g:
+        return {}, {}, []
+    btc = pl.col("family") == "btc_15m"
+    # Why two policies only: "stale" (cancel when left alone or the fair value crosses our price, 128 ms)
+    # is what a quoter would run; "passive" (no cancel rule) shows what that rule is worth.
+    pol = pl.col("policy").is_in(["stale", "passive"])
+    fill = _records(q_root / "table_fill_type.parquet", ["policy", "family", "type", "model", "T", "n", "n_clusters", "mean", "se"], btc & pol)
+    val = _records(q_root / "table_value_type.parquet", ["policy", "family", "type", "model", "tau", "n", "n_clusters", "mean", "se"], btc & pol)
+    val_nr = _records(q_root / "table_value_type_norebate.parquet", ["policy", "family", "type", "model", "tau", "n", "mean", "se"], btc & pol)
+    data = {
+        "queue_fill": fill,
+        "queue_value": [r | {"rebate": True} for r in val] + [r | {"rebate": False} for r in val_nr],
+        "queue_value_x": _records(q_root / "table_value_x.parquet", ["policy", "qtb", "model", "tau", "n", "mean", "se"], pol),
+        "queue_tox_x": _records(q_root / "table_tox_x.parquet", ["policy", "model", "qpos", "n", "h", "M1", "M60", "a1", "a1_se", "a60", "a60_se", "D1", "D60"], pol),
+        "queue_cancel_latency": _records(q_root / "table_cancel_latency.parquet", ["type", "model", "tau", "lc_ms", "n", "mean", "se"]),
+        "queue_latency": _records(q_root / "table_latency.parquet", ["policy", "col", "model", "T", "tau", "lat_ms", "n", "mean", "se"], pl.col("policy") == "stale"),
+        "queue_gate": _records(q_root / "table_gate_ours.parquet", ["policy", "rebate", "model", "tau", "date", "n", "n_clusters", "mean", "se"], pol),
+    }
+    def pick(rows, **kv):
+        return next((r for r in rows if all(r.get(k) == v for k, v in kv.items())), {})
+    kp = {
+        "queue_probes": g.get("probes"),
+        "queue_fill60_touch": pick(fill, policy="stale", type="touch", model="matched", T=60).get("mean"),
+        "queue_fill60_improve": pick(fill, policy="stale", type="improve", model="matched", T=60).get("mean"),
+        "queue_v60_touch_c": pick(val, policy="stale", type="touch", model="matched", tau=60).get("mean"),
+        "queue_v60_improve_c": pick(val, policy="stale", type="improve", model="matched", tau=60).get("mean"),
+        "queue_v60_touch_passive_c": pick(val, policy="passive", type="touch", model="matched", tau=60).get("mean"),
+        "queue_gate_ours": ((g.get("gate_ours") or {}).get("stale") or {}).get("no_rebate"),
+    }
+    chk = []
+    for d, c in sorted(g.get("checks", {}).items()):
+        chk += [
+            {"area": "queue", "check": f"level stream {d}: size_before = previous size_after", "result": f"{c.get('continuity_break_share', 1) * 100:.3f} % breaks", "ok": c.get("continuity_break_share", 1) < 0.001},
+            {"area": "queue", "check": f"traded volume linked to a book decrease {d}", "result": f"{c.get('linked_volume_share', 0) * 100:.1f} %", "ok": c.get("linked_volume_share", 0) >= 0.95},
+            {"area": "queue", "check": f"level size = top-of-book size {d}", "result": f"bid {c.get('touch_size_match', {}).get('bid', 0) * 100:.2f} % · ask {c.get('touch_size_match', {}).get('ask', 0) * 100:.2f} %",
+             "ok": min(c.get("touch_size_match", {}).get("bid", 0), c.get("touch_size_match", {}).get("ask", 0)) >= 0.99},
+        ]
+    return data, kp, chk
+
+
+def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict[str, Path], tests: bool = True,
+          q_root: Path = Path("reports/queue")) -> dict:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
     fair_params = json.loads((fair_root / "fair_params.json").read_text()) if (fair_root / "fair_params.json").exists() else {}
@@ -271,6 +316,9 @@ def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict
         chk.append({"area": "fair value", "check": "no input received after t (lookahead)", "result": "asserted on every row", "ok": "inputs " in txt})
     for d, c in sorted(checks.items()):
         chk.append({"area": "adverse selection", "check": f"fills {d}: trade side consistent with the book", "result": f"{c.get('sign_ok', 0) * 100:.1f} %", "ok": c.get("sign_ok", 0) >= 0.95})
+    q_data, q_kpis, q_chk = queue_section(q_root)
+    kpis.update(q_kpis)
+    chk += q_chk
     rec = recorder_health(data_dirs)
     chk += recorder_checks(rec)
     chk.append({"area": "code", "check": "test suite", "result": t["summary"], "ok": bool(t["passed"]) and not t["failed"]})
@@ -300,6 +348,7 @@ def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict
         "checks": chk,
         "recorder": rec,
         "history": hist,
+        **q_data,
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")

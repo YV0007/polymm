@@ -228,6 +228,21 @@ def cmd_markouts(args) -> int:
     return 0
 
 
+def cmd_queue(args) -> int:
+    from .queue.run import QueueConfig, run_queue
+
+    # Why on top of the markouts output: probe fills are scored with the same walk-forward fair
+    # series (reports/markouts/<date>/fair_oos.parquet) and markout engine as the stage-4 fills.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+    qc = QueueConfig(dates=sorted(args.dates), fair_root=Path(args.fair_root), markouts_root=Path(args.markouts_root),
+                     out=Path(args.out), data_dirs=[Path(d) for d in args.data], plot_dir=Path(args.plots_out),
+                     plots=not args.no_plots, reuse=args.reuse)
+    R = run_queue(qc)
+    print(f"queue {', '.join(qc.dates)}: {R['probes']:,} probes, x* {R['x_star']}, our Gate A slice {R['gate_ours']} "
+          f"in {R['seconds']} s; report {qc.out / 'summary.md'}")
+    return 0
+
+
 def cmd_dashboard(args) -> int:
     from .dashboard import build
 
@@ -307,6 +322,15 @@ def main(argv: list[str] | None = None) -> int:
     mk.add_argument("--reuse", action="store_true", help="reuse per-day markouts.parquet and fair_oos.parquet")
     mk.add_argument("--in-sample-fair", action="store_true", help="use reports/fair/<date>/fair.parquet (final fit; leaks, for comparison only)")
     mk.add_argument("--no-plots", action="store_true")
+    qu = sub.add_parser("queue", help="queue and fill model: virtual orders on the replayed book, fill probability, toxicity by queue position, value (stage 5)")
+    qu.add_argument("dates", nargs="+", help="YYYY-MM-DD ... ; the first is training only")
+    qu.add_argument("--fair-root", default="reports/fair", help="fair-value day folders (replay/, clean windows, reference/)")
+    qu.add_argument("--markouts-root", default="reports/markouts", help="stage-4 output (walk-forward fair series, signature)")
+    qu.add_argument("--out", default="reports/queue")
+    qu.add_argument("--data", nargs="+", default=["data_vps", "data"], help="event stores, in preference order")
+    qu.add_argument("--plots-out", default="research/queue_fill")
+    qu.add_argument("--reuse", action="store_true", help="reuse per-day probes.parquet (analysis-only rerun)")
+    qu.add_argument("--no-plots", action="store_true")
     db = sub.add_parser("dashboard", help="gather all dashboard numbers into one JSON file")
     db.add_argument("--out", default="reports/dashboard/dashboard_data.json")
     db.add_argument("--fair-root", default="reports/fair")
@@ -324,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
         "vol": cmd_vol,
         "fair": cmd_fair,
         "markouts": cmd_markouts,
+        "queue": cmd_queue,
         "dashboard": cmd_dashboard,
     }[args.cmd](args)
 

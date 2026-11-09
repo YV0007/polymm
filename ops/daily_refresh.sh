@@ -5,7 +5,8 @@
 #        polymm quality (replay + checks + strict clean windows) and polymm vol (σ series)
 #   3. polymm fair over all days (walk-forward; refreshes the Gamma strikes/outcomes)
 #   4. polymm markouts over all days
-#   5. polymm dashboard  -> reports/dashboard/dashboard_data.json (the dashboard's one data file)
+#   5. polymm queue over all days (new days only; --reuse)
+#   6. polymm dashboard  -> reports/dashboard/dashboard_data.json (the dashboard's one data file)
 # Why plots are off: the reports' PNGs live in research/ (tracked); a daily run must not
 # rewrite tracked files. Rerun with plots by hand when a write-up is refreshed.
 # Why a .complete marker: a day is final once yesterday has ended and been pulled; a day run
@@ -47,6 +48,10 @@ echo "-- fair"
 $P fair "${DATES[@]}" --no-plots 2>&1 | grep -v "Sortedness\|join_asof" | tail -2 || echo "ERROR: fair failed"
 echo "-- markouts"
 $P markouts "${DATES[@]}" --no-plots 2>&1 | tail -2 || echo "ERROR: markouts failed"
+echo "-- queue"
+# Why --reuse: probes.parquet of a finished day never changes, and a day costs ~4 min; only new
+# days are built, the pooled tables are recomputed over all of them (D-026).
+$P queue "${DATES[@]}" --reuse --no-plots 2>&1 | tail -2 || echo "ERROR: queue failed"
 echo "-- dashboard"
 $P dashboard | tail -1 || echo "ERROR: dashboard failed"
 echo "== $(date -u +%FT%TZ) done"
