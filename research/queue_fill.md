@@ -6,6 +6,8 @@ Machine-written tables: `reports/queue/summary.md`. Plots: `research/queue_fill/
 
 ## 1. Result in one paragraph
 
+> **Status: v1 floor, not a verdict (D-027).** These numbers are what a blind quoter gets: orders on a fixed grid, no selection model, a 1 s fair-value grid as the stale signal, an assumed 128 ms latency. They bound a naive strategy from below; whether a selective, Binance-driven quoter can do better is tested after the simulator exists.
+
 We dropped 1.9 M virtual 5-share orders ("probes") into the replayed books of 11-06 to 11-08 and followed each one's place in the queue until it was filled or would have been pulled. **On BTC 15-minute, no placement we can make at 128 ms has positive value.** A passive order at the back of the touch is filled 56 % of the time within 60 s, and each placement loses 1.16 ¢ per share (including the rebate), because most of its fills come from the price running *through* it after everyone else has left. Cancelling when the order goes stale (the rest of the book moved through our price, or the fair value crossed it) cuts the loss to 0.29 ¢, and to 0.15 ¢ with an instant cancel, but never above zero. Our fills are worse than the average maker's of stage 4 (adverse selection 1.3 to 2.0 ¢ at 1 s against 0.8 ¢) and get worse the further back we join: from 0.6 ¢ for a price-improving order alone at a new best price to 2.3 to 2.4 ¢ behind 200+ shares. **Gate A's slice (step into a > 5 ¢ spread) fails for our own orders** under every policy and cancel model; stage 4's GO described the average resting maker, not a 128 ms newcomer. Every result holds across the four cancel models.
 
 ## 1a. Numbers
