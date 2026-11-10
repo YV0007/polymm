@@ -8,6 +8,8 @@ Machine-written tables: `reports/queue/summary.md`. Plots: `research/queue_fill/
 
 > **Status: v1 floor, not a verdict (D-027).** These numbers are what a blind quoter gets: orders on a fixed grid, no selection model, a 1 s fair-value grid as the stale signal, an assumed 128 ms latency. They bound a naive strategy from below; whether a selective, Binance-driven quoter can do better is tested after the simulator exists.
 
+> **Correction 2026-11-10 (D-031): what the 128 ms is.** It was described below as "the median WebSocket lag measured on the VPS". It is the **Binance** feed's lag (Tokyo → VPS, p50 127 ms). The **Polymarket** feed reaches the VPS in about 11 ms (p50, p95 26–61 ms). The replay runs on our receive clock, which already includes our feed lag, so the latency added to a probe should be the **order path** only: the VPS → CLOB API round trip is 46–52 ms (p50), about 25 ms one way, plus the venue's unknown processing time. 128 ms is therefore a pessimistic stand-in for the order path, not a measurement of it. The conclusions do not change: the latency sweep in §2 shows every placement still loses at 50 ms (touch −0.23, improving −0.09) and at 0 ms (−0.15, −0.01 ± 0.14).
+
 We dropped 1.9 M virtual 5-share orders ("probes") into the replayed books of 11-06 to 11-08 and followed each one's place in the queue until it was filled or would have been pulled. **On BTC 15-minute, no placement we can make at 128 ms has positive value.** A passive order at the back of the touch is filled 56 % of the time within 60 s, and each placement loses 1.16 ¢ per share (including the rebate), because most of its fills come from the price running *through* it after everyone else has left. Cancelling when the order goes stale (the rest of the book moved through our price, or the fair value crossed it) cuts the loss to 0.29 ¢, and to 0.15 ¢ with an instant cancel, but never above zero. Our fills are worse than the average maker's of stage 4 (adverse selection 1.3 to 2.0 ¢ at 1 s against 0.8 ¢) and get worse the further back we join: from 0.6 ¢ for a price-improving order alone at a new best price to 2.3 to 2.4 ¢ behind 200+ shares. **Gate A's slice (step into a > 5 ¢ spread) fails for our own orders** under every policy and cancel model; stage 4's GO described the average resting maker, not a 128 ms newcomer. Every result holds across the four cancel models.
 
 ## 1a. Numbers
@@ -92,7 +94,7 @@ Racing for a spread opening (≥ 2 ¢): at 50 ms someone else is already there 4
 
 ### What a probe is
 
-A probe is an order that never existed. At decision time $t$ it reads the replayed book, picks a price $p$ on one side, and reaches the book at $t + L$ (latency $L$, 128 ms by default, the median WebSocket lag measured on the VPS). It joins the **back** of the queue at $p$ and changes nothing in the book (small-order assumption: 5 shares, the minimum order size).
+A probe is an order that never existed. At decision time $t$ it reads the replayed book, picks a price $p$ on one side, and reaches the book at $t + L$ (latency $L$, 128 ms by default: a pessimistic stand-in for the order path; the number is the Binance feed's lag, not Polymarket's, see the correction in §1 and D-031). It joins the **back** of the queue at $p$ and changes nothing in the book (small-order assumption: 5 shares, the minimum order size).
 
 From then on, at its level, every book update changes $x$, the shares ahead of it:
 

@@ -213,3 +213,20 @@ Template:
 - **Rejected:** `/rewards/markets/multi` (every market ever, 10+ min to page); yield at the minimum size (tiny pools show hundreds of % a day); ranking on reward + fill-P&L point estimate (picks noise); fees from tags alone; competing score ranges T/4…T/2 with central m + (x − m)/3 (the audit showed that central was the upper bound); pooling 11-06 (5× thinner book) with later days. Items 1–6 of the report's §4 came from an independent audit before commit.
 - **Ref:** `src/polymm/rewards/`, `research/rewards.md`, `reports/rewards/summary.md`, `reports/rewards/rewards_params.json`, `tests/test_rewards.py`; dashboard section `rewards_*`; `ops/daily_refresh.sh` runs `polymm rewards … --sample 3` (step added by the D-030 session). Also in this commit: `dashboard.collection()` / `recorder_health()` scan the one store once and label the source by date (data/ → data_vps since D-030); `polymm dashboard --laptop-data` removed.
 - **Status:** active (v1, D-027): gross yields outside our recorded markets; one day of pools and books. Next for rewards: record the books of the top screened markets and measure their fill P&L before calling any of them income.
+
+### D-031 · 2026-11-10 · Latency budget measured: the 128 ms is Binance's leg; the simulator adds only the order path
+- **Decision:** (1) Stage 5's 128 ms (`queue.engine.BASE_LAT_MS`) was labelled "median WS receive lag measured on the VPS". It is the **Binance** feed's lag (Tokyo → VPS). The report and the code comment are corrected; the number stays as a pessimistic stand-in for the order path, so no stage-5 result is rerun. (2) The replay runs on our receive clock, which already contains our feed lag, so the simulator (stage 7) adds **only the order path**: compute + VPS → CLOB send + venue processing, drawn per order from a distribution, base case centred at 75 ms (≈ 25 ms one way + 50 ms assumed venue time), bracketed by 30 ms and 128 ms, swept 0 / 30 / 75 / 128 / 300 / 1000 ms, and longer when the message rate is high (bursts are when the feed tail and jumps coincide). (3) `ops/feed_lag.py` measures the budget: feed lag per feed and day from the store, and the API round trip on one warm connection (run on the VPS). (4) The venue term is measured only with live orders (send → ack, send → our order seen in the WS book, cancel → size gone): first item of the stage-8 sim-vs-live comparison (D-028).
+- **Why:** measured 2026-11-10 (VPS clock NTP-disciplined to ~0.3 ms), ms, p5 / p50 / p95 / p99:
+
+  | Leg | 11-08 | 11-09 |
+  |---|---|---|
+  | Polymarket book changes → VPS | 10 / 12 / 61 / 3896 | 10 / 12 / 59 / 779 |
+  | Polymarket top of book → VPS | 10 / 11 / 26 / 163 | 9 / 11 / 28 / 122 |
+  | Polymarket trades → VPS | 10 / 12 / 33 / 198 | 10 / 11 / 43 / 176 |
+  | Binance BTC trades → VPS | 121 / 128 / 155 / 338 | 120 / 127 / 136 / 159 |
+
+  VPS → `clob.polymarket.com` (Cloudflare, Frankfurt edge) warm round trip: p50 46–52 ms, p95 64–65 ms; a new connection costs ~70 ms. TCP connect to Binance's stream host: 250 ms (one Tokyo round trip). So the book reaches us about as fast as it reaches anyone nearby; our slow leg is the BTC signal (~127 ms) and the burst tail of the book feed. Stage 5's latency sweep already shows the conclusions hold at 50 ms and 0 ms.
+- **Levers, ranked for later (not decided):** a closer leading BTC price (Deribit / Coinbase / Bitstamp / Chainlink stream vs Binance, by lead–lag measured at our location); predicting risky moments instead of racing them; the burst tail (A/B feed arbitration, D-030); server region (time the API from a few cloud regions); warm connections and pre-signed orders; a faster language last.
+- **Rejected:** keeping "128 ms = our WebSocket lag" (wrong leg); adding the feed lag on top of a receive-clock replay (counts it twice); a constant latency (hides the tail that coincides with jumps).
+- **Ref:** `ops/feed_lag.py`, `src/polymm/queue/engine.py` (`BASE_LAT_MS`), `research/queue_fill.md` §1 correction, `research/quality_report.md` (Binance recv − event p50 128 ms), D-022, D-026, D-028, D-030
+- **Status:** active

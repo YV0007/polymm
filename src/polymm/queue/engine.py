@@ -217,7 +217,11 @@ def run_probes(p_lvl, p_grp, p_book, p_s, p_pk, p_tarr, p_tmax,
 # ------------------------------------------------------------------------------------------------
 GRID_S = 2           # base grid: every 2 s, our latency
 SWEEP_S = 10         # latency sweep: every 10 s
-BASE_LAT_MS = 128    # median WS receive lag measured on the VPS (D-022)
+# Why 128 ms: a pessimistic stand-in for the ORDER PATH (decision → our order resting in the book).
+# It is the Binance feed's median lag, not Polymarket's (that is ~11 ms) — D-031. The replay runs
+# on our receive clock, which already contains our feed lag, so only the order path is added
+# here; measured VPS → CLOB round trip is ~46–52 ms (p50), ~25 ms one way + unknown venue time.
+BASE_LAT_MS = 128
 SWEEP_LAT_MS = (0, 50, 300, 1000)
 
 
