@@ -52,19 +52,32 @@ def _gb(path: Path) -> float:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) / 1e9
 
 
+SERVER_CUT = "2026-11-07"   # the server store's first day (09:35:45.919 UTC); earlier rows are the laptop's
+
+
+def source_of(day: str) -> str:
+    """Which recorder a day's rows came from. Why by date: since 2026-11-10 data/ is a symlink to
+    data_vps/, the one store of record, holding the laptop's rows before the server's first
+    instant and the server's from then on (merge of 2026-11-10)."""
+    if day < SERVER_CUT:
+        return "laptop"
+    if day == SERVER_CUT:
+        return "laptop + server (cut 09:35 UTC)"
+    return "server"
+
+
 def collection(data_dirs: dict[str, Path]) -> list[dict]:
-    """Rows per day and table. Why both roots: days before 2026-11-07 09:00 UTC exist only in
-    the laptop recording (`data`), later ones on the server copy (`data_vps`); for a day in
-    both, the server copy wins."""
+    """Rows per day and table, from the store of record (scanned once; `data_dirs` keeps the old
+    shape, every root that is the same folder as an earlier one is skipped)."""
     days: dict[str, dict] = {}
-    for src, root in data_dirs.items():
+    for root in _unique_roots(data_dirs):
         be = root / "events" / "book_events"
         if not be.exists():
             continue
         for d in sorted(p.name[3:] for p in be.glob("dt=*")):
-            if d in days and days[d]["source"] == "server":
+            if d in days:
                 continue
-            row = {"date": d, "source": src}
+            row = {"date": d, "source": source_of(d)}
             for t, layer in TABLES.items():
                 row[t] = _rows(root / layer / t / f"dt={d}")
             row["hours"] = len(list((be / f"dt={d}").glob("hour=*")))
@@ -72,6 +85,18 @@ def collection(data_dirs: dict[str, Path]) -> list[dict]:
                               + _gb(root / "raw" / "ws_market" / f"dt={d}") + _gb(root / "raw" / "binance" / f"dt={d}"), 3)
             days[d] = row
     return [days[d] for d in sorted(days)]
+
+
+def _unique_roots(data_dirs: dict[str, Path] | Path) -> list[Path]:
+    """Each physical folder once (data/ → data_vps/ is a symlink since 2026-11-10)."""
+    roots = [data_dirs] if isinstance(data_dirs, Path) else list(data_dirs.values())
+    seen, out = set(), []
+    for r in roots:
+        k = r.resolve() if r.exists() else r
+        if k not in seen:
+            seen.add(k)
+            out.append(r)
+    return out
 
 
 _HEALTH_COUNTERS = ["parse_errors", "reconnects", "spot_reconnects", "gaps", "rows_delta", "mirror_dropped", "mirror_kept"]
@@ -87,11 +112,11 @@ def recorder_health(data_dirs: dict[str, Path]) -> list[dict]:
     down) restarts them at 0, so on that row the delta is the new value itself.
     Same source rule as `collection`: a day on the server copy beats the laptop copy."""
     out: dict[str, dict] = {}
-    for src, root in data_dirs.items():
+    for root in _unique_roots(data_dirs):
         base = root / "events" / "health"
         for dd in sorted(base.glob("dt=*")) if base.exists() else []:
             day = dd.name[3:]
-            if day in out and out[day]["source"] == "server":
+            if day in out:
                 continue
             files = sorted(dd.rglob("*.parquet"))
             if not files:
@@ -111,7 +136,7 @@ def recorder_health(data_dirs: dict[str, Path]) -> list[dict]:
             ).row(0, named=True)
             mk, md = agg.get("mirror_kept") or 0, agg.get("mirror_dropped") or 0
             out[day] = {
-                "date": day, "source": src, "health_rows": agg["rows"],
+                "date": day, "source": source_of(day), "health_rows": agg["rows"],
                 "max_gap_s": round(agg["max_gap_s"] or 0, 1), "restarts": agg["restarts"],
                 "parse_errors": agg.get("parse_errors"), "ws_cuts": agg.get("reconnects"),
                 "spot_cuts": agg.get("spot_reconnects"), "gaps": agg.get("gaps"),
@@ -252,8 +277,42 @@ def queue_section(q_root: Path) -> tuple[dict, dict, list[dict]]:
     return data, kp, chk
 
 
+def rewards_section(rw_root: Path) -> tuple[dict, dict, list[dict]]:
+    """Stage 6 (D-029): the sector grid of liquidity-reward yields over every paying market, the top
+    markets, and our recorded Fed pools (reward vs fill P&L per share). Reads reports/rewards only."""
+    j = rw_root / "rewards.json"
+    if not j.exists():
+        return {}, {}, []
+    R = json.loads(j.read_text())
+    sector = _records(rw_root / "table_screen_sector.parquet",
+                      ["sector", "markets", "pool_usd_day", "yield1k_med", "yield1k_p75", "yield1k_med_cons", "yield10k_med",
+                       "markets_cons_over_0_2pct", "capacity_med_usd", "capacity_sum_usd", "jump_med_c", "days_to_end_med", "two_sided_only_share"])
+    top = _records(rw_root / "table_screen_top.parquet",
+                   ["sector", "question", "rate_per_day", "mid", "spread_c", "comp_central", "yield1k_central", "yield1k_high",
+                    "yield10k_central", "capacity_usd", "days_to_end", "snaps"])[:25]
+    # the headline day (latest recorded) only: 11-06's book was ~5x thinner, so pooled shares mislead
+    hd = R.get("headline_day")
+    pool = _records(rw_root / "table_pool_per_share.parquet",
+                    ["question", "date", "policy", "model", "reward_c_per_share_side", "fill_c_per_share_side", "fill_c_per_share_side_se"],
+                    pl.col("date") == hd) if hd else []
+    data = {"rewards_sector": sector, "rewards_top": top, "rewards_pool": pool}
+    best = max(sector, key=lambda r: r.get("yield1k_med") or 0) if sector else {}
+    fed = next((r for r in pool if r.get("policy") == "passive" and r.get("model") == "matched" and "increase" in (r.get("question") or "")), {})
+    sc = R.get("screen") or {}
+    kp = {"rewards_live_markets": (R.get("live") or {}).get("markets"), "rewards_pool_usd_day": (R.get("live") or {}).get("pool_usd_day"),
+          "rewards_recorded_pool_usd_day": sum(x.get("pool_usd_day") or 0 for x in R.get("recorded_with_pool") or []),
+          "rewards_best_sector": best.get("sector"), "rewards_best_sector_yield1k": best.get("yield1k_med"),
+          "rewards_fed_reward_c": fed.get("reward_c_per_share_side"), "rewards_fed_fill_c": fed.get("fill_c_per_share_side"),
+          "rewards_fed_fill_c_se": fed.get("fill_c_per_share_side_se"), "rewards_screen_snaps": sc.get("snapshots")}
+    chk = [{"area": "rewards", "check": "reward configuration snapshot is from the last 2 days", "result": str(R.get("config_day")),
+            "ok": bool(R.get("config_day")) and (datetime.now(timezone.utc) - datetime.fromisoformat(R["config_day"]).replace(tzinfo=timezone.utc)).days <= 2},
+           {"area": "rewards", "check": "screen used ≥ 3 book snapshots per market", "result": f"{sc.get('snapshots')} snapshots, {sc.get('markets_sampled')} markets",
+            "ok": (sc.get("snapshots") or 0) >= 3}]
+    return data, kp, chk
+
+
 def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict[str, Path], tests: bool = True,
-          q_root: Path = Path("reports/queue")) -> dict:
+          q_root: Path = Path("reports/queue"), rw_root: Path = Path("reports/rewards")) -> dict:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
     fair_params = json.loads((fair_root / "fair_params.json").read_text()) if (fair_root / "fair_params.json").exists() else {}
@@ -319,6 +378,9 @@ def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict
     q_data, q_kpis, q_chk = queue_section(q_root)
     kpis.update(q_kpis)
     chk += q_chk
+    r_data, r_kpis, r_chk = rewards_section(rw_root)
+    kpis.update(r_kpis)
+    chk += r_chk
     rec = recorder_health(data_dirs)
     chk += recorder_checks(rec)
     chk.append({"area": "code", "check": "test suite", "result": t["summary"], "ok": bool(t["passed"]) and not t["failed"]})
@@ -349,6 +411,7 @@ def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict
         "recorder": rec,
         "history": hist,
         **q_data,
+        **r_data,
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")

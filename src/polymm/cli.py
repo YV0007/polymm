@@ -243,6 +243,20 @@ def cmd_queue(args) -> int:
     return 0
 
 
+def cmd_rewards(args) -> int:
+    from .rewards.run import RewardsConfig, run_rewards
+
+    # Why --sample: only the current reward configuration and books are published, so the screen
+    # needs live REST snapshots (each ~20 s over ~11k markets); the daily refresh takes a few.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+    rc = RewardsConfig(dates=sorted(args.dates), fair_root=Path(args.fair_root), queue_root=Path(args.queue_root), out=Path(args.out),
+                       data_root=Path(args.data), plot_dir=Path(args.plots_out), plots=not args.no_plots, sample=args.sample, every_s=args.every)
+    R = run_rewards(rc)
+    print(f"rewards: {R['live']['markets']:,} live pools ({R['live']['pool_usd_day']:,.0f} USD/day), screen {R['screen']} in {R['seconds']} s; "
+          f"report {rc.out / 'summary.md'}")
+    return 0
+
+
 def cmd_dashboard(args) -> int:
     from .dashboard import build
 
@@ -250,7 +264,7 @@ def cmd_dashboard(args) -> int:
     # latest fair-value and markout outputs, row counts, checks and tests into it.
     out = Path(args.out)
     d = build(Path("."), out, Path(args.fair_root), Path(args.markouts_root),
-              {"laptop": Path(args.laptop_data), "server": Path(args.server_data)}, tests=not args.no_tests)
+              {"store": Path(args.server_data)}, tests=not args.no_tests)
     k = d["kpis"][0]
     print(f"dashboard data -> {out} ({out.stat().st_size / 1e3:.0f} kB): data through {k['data_through']}, "
           f"tests {k['tests_passed']} passed / {k['tests_failed']} failed, Gate A {k['gate_verdict']}")
@@ -331,11 +345,20 @@ def main(argv: list[str] | None = None) -> int:
     qu.add_argument("--plots-out", default="research/queue_fill")
     qu.add_argument("--reuse", action="store_true", help="reuse per-day probes.parquet (analysis-only rerun)")
     qu.add_argument("--no-plots", action="store_true")
+    rw = sub.add_parser("rewards", help="liquidity rewards and fees: pools, our share, cost of resting, screen over every paying market (stage 6)")
+    rw.add_argument("dates", nargs="+", help="recorded days for the pool markets we record (YYYY-MM-DD ...)")
+    rw.add_argument("--fair-root", default="reports/fair")
+    rw.add_argument("--queue-root", default="reports/queue", help="stage-5 probes (cost of resting)")
+    rw.add_argument("--out", default="reports/rewards")
+    rw.add_argument("--data", default="data", help="where reward configs and book samples are stored (reference/)")
+    rw.add_argument("--plots-out", default="research/rewards")
+    rw.add_argument("--sample", type=int, default=0, help="take N REST snapshots of every paying market's book first")
+    rw.add_argument("--every", type=int, default=600, help="seconds between snapshots")
+    rw.add_argument("--no-plots", action="store_true")
     db = sub.add_parser("dashboard", help="gather all dashboard numbers into one JSON file")
     db.add_argument("--out", default="reports/dashboard/dashboard_data.json")
     db.add_argument("--fair-root", default="reports/fair")
     db.add_argument("--markouts-root", default="reports/markouts")
-    db.add_argument("--laptop-data", default="data")
     db.add_argument("--server-data", default="data_vps")
     db.add_argument("--no-tests", action="store_true", help="skip running the test suite")
     args = p.parse_args(argv)
@@ -349,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
         "fair": cmd_fair,
         "markouts": cmd_markouts,
         "queue": cmd_queue,
+        "rewards": cmd_rewards,
         "dashboard": cmd_dashboard,
     }[args.cmd](args)
 
