@@ -19,7 +19,22 @@ exec >>"$LOG" 2>&1
 echo "== $(date -u +%FT%TZ) start host=$HOST dest=$DEST keep=${KEEP_DAYS}d dry=$DRY_RUN"
 
 # 1) pull (incremental, resumable; files still being written are skipped)
-rsync -a --partial --exclude '*.tmp' --stats "polymm@$HOST:$REMOTE/" "$DEST/" | grep -E "Number of .*files transferred|Total transferred"
+# Why --partial-dir and not --partial: --partial leaves an interrupted file under its final
+# name, so a reader sees a truncated Parquet file (2026-11-10: the server stopped answering
+# mid-pull and the morning refresh crashed on a 64 KB stub). --partial-dir keeps the piece in a
+# hidden .rsync-partial/ folder until it is complete; the next attempt resumes from it.
+# Why --timeout and keepalives: a stalled link must fail in minutes, not hang; then retry.
+ok=0
+for attempt in 1 2 3; do
+  if rsync -a --partial-dir=.rsync-partial --timeout=120 --exclude '*.tmp' --exclude '.rsync-partial' --stats \
+       -e "ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ConnectTimeout=20" \
+       "polymm@$HOST:$REMOTE/" "$DEST/" | grep -E "Number of .*files transferred|Total transferred"; then
+    ok=1; break
+  fi
+  echo "WARNING: pull attempt $attempt failed; retrying in $((attempt * 30)) s"
+  sleep $((attempt * 30))
+done
+if [ "$ok" != 1 ]; then echo "ERROR: pull failed after 3 attempts"; exit 1; fi
 
 # 2) dead-man check: yesterday (UTC) must have book_events locally after the pull
 Y=$(date -u -v-1d +%F)
@@ -42,12 +57,16 @@ while read -r p; do
   dt=${p##*dt=}
   [[ "$dt" < "$CUTOFF" ]] || continue
   remote=$(ssh -n "$HOST" "cd $REMOTE/$p && find . -type f ! -name '*.tmp' -printf '%P %s\n' | sort")
-  local_=$( (cd "$DEST/$p" 2>/dev/null && find . -type f -exec stat -f '%N %z' {} + | sed 's|^\./||' | sort) || true)
+  local_=$( (cd "$DEST/$p" 2>/dev/null && find . -path '*/.rsync-partial' -prune -o -type f -exec stat -f '%N %z' {} + | sed 's|^\./||' | sort) || true)
+  # Why "every server file is here with the same size" and not "the two lists are equal":
+  # the local store may hold more than the server (laptop-only hours merged in, D-030);
+  # what matters before deleting on the server is that nothing of the server's is missing.
+  missing=$(comm -23 <(printf '%s\n' "$remote") <(printf '%s\n' "$local_") | grep -c . || true)
   if [ -z "$remote" ]; then
     echo "KEEP  $p: only unfinished (.tmp) files on server -> left for a human to look at"
     continue
-  elif [ "$remote" != "$local_" ]; then
-    echo "KEEP  $p: local copy differs ($(wc -l <<<"$remote") remote vs $(wc -l <<<"$local_") local files) -> not deleted"
+  elif [ "$missing" != 0 ]; then
+    echo "KEEP  $p: $missing server files missing or different locally -> not deleted"
     continue
   else
     echo "prune $p: $(wc -l <<<"$remote" | tr -d ' ') files verified locally"

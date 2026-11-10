@@ -120,6 +120,9 @@ HEALTH = pa.schema(
         # Added 2026-11-08 (D-022). Worst event-loop freeze in the last health interval:
         # tells "we stopped reading" (high) apart from "the venue cut us" (low).
         ("loop_lag_max_ms", pa.float64()),
+        # Added 2026-11-10 (D-030): REST answers older than our book (not gaps; `gaps` counts
+        # only confirmed gaps where the book was reset from then on).
+        ("rest_stale", pa.int64()),
     ]
 )
 

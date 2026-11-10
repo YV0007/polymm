@@ -1,5 +1,6 @@
-# data lake: never in git
+# data lake: never in git (data is a symlink to data_vps/ since D-030)
 data/
+data
 logs/
 
 # python / uv

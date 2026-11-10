@@ -120,7 +120,6 @@ class RestPoller:
                 self.races += 1
                 continue
             aid = b.get("asset_id", "")
-            self.gaps += 1
             if aid not in self.books:
                 self.parser._book(aid)  # creates it
             local = self.books[aid]
@@ -134,6 +133,10 @@ class RestPoller:
                 self.stale_rest += 1
                 log.info("rest older than local for %s… (rest=%d local=%d), not resetting", aid[:10], ts_exch, local.last_ts_exch_ms)
             else:
+                # Why count here and not above: a REST answer older than our newest delta is not
+                # a gap (on 2026-11-08, 24 of 28 "gaps" were REST lagging by ~4 ms); it is counted
+                # in stale_rest. `gaps` now means: our book was wrong and was reset.
+                self.gaps += 1
                 log.info("gap confirmed for %s… (rest hash %s not in stream after %.0fs); resetting book",
                          aid[:10], b.get("hash", "")[:8], self.confirm_delay_s)
                 bids, asks = _levels(b)

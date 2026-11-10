@@ -278,17 +278,17 @@ class Recorder:
                 s.parse_errors, reconn, self.poller.gaps, tob_mm, self.poller.polls,
                 self.queue.qsize(), self.queue_max_seen, self.last_write_latency_ms,
                 self.raw.bytes_written, self.parquet.bytes_written, s.mirror_dropped, s.mirror_kept,
-                sp.msgs, spot_reconn, lag_ms,
+                sp.msgs, spot_reconn, lag_ms, self.poller.stale_rest,
             )
             self.parquet.buffers["health"].append(row)
             shards = " ".join(f"{x.name}:c{x.conn_id}/r{x.reconnects}/s{len(x.subscribed)}" for x in srcs)
             log.info(
                 "conn=%d sub=%d msgs=%d (book=%d delta=%d/%drows trade=%d tob=%d other=%d err=%d) "
-                "reconn=%d gaps=%d races=%d tobmm=%d polls=%d q=%d/%d wlat=%.0fms lag=%.0fms raw=%.1fMB pq=%.1fMB "
+                "reconn=%d gaps=%d stale=%d races=%d tobmm=%d polls=%d q=%d/%d wlat=%.0fms lag=%.0fms raw=%.1fMB pq=%.1fMB "
                 "mirror=%d dropped/%d kept spot=%d (q=%d t=%d err=%d reconn=%d q=%d/%d) ws[%s]",
                 conn_id, n_sub, s.msgs_total, s.msgs_book, s.msgs_delta,
                 s.rows_delta, s.msgs_trade, s.msgs_tob, s.msgs_other, s.parse_errors, reconn,
-                self.poller.gaps, self.poller.races, tob_mm, self.poller.polls, self.queue.qsize(), self.queue_max_seen,
+                self.poller.gaps, self.poller.stale_rest, self.poller.races, tob_mm, self.poller.polls, self.queue.qsize(), self.queue_max_seen,
                 self.last_write_latency_ms, lag_ms, self.raw.bytes_written / 1e6, self.parquet.bytes_written / 1e6,
                 s.mirror_dropped, s.mirror_kept,
                 sp.msgs, sp.quotes, sp.trades, sp.parse_errors, spot_reconn, self.spot_queue.qsize(), self.spot_queue_max_seen,

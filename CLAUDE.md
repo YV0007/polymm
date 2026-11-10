@@ -14,7 +14,7 @@ Each fact lives in exactly one place (decision D-018). Don't copy between them; 
 | **Decisions** (what we chose and why) | `docs/DECISIONS.md` in this repo, append-only. On a worktree/branch read the main copy: `/Users/macbook/Desktop/POLY MM/docs/DECISIONS.md` |
 | **Data design** (datasets, schemas, verified quirks) | `docs/DATA_PLAN.md` |
 | **Plans, today's steps, status, ops/cost** | Notion → *MM / Polymarket MM — Project* (page id `40fe45929c1e8104acb8fb8a9ade3a04`) → Plan → *Global plan* (`40fe45929c1e81b9983dd81a6aa613ff`), *Daily plan* (`40fe45929c1e81d883c4fa0b448339e3`) |
-| **Data** | `data/` locally, `/home/polymm/polymm/data/` on the VPS (`ssh polymm`). Never in Notion or git. |
+| **Data** | `data_vps/` locally, the one store (pulled nightly; `data/` links to it; laptop recording before 2026-11-07 09:35 UTC merged in, D-030), `/home/polymm/polymm/data/` on the VPS (`ssh polymm`). Never in Notion or git. |
 | **Reports** | `reports/`, `research/`; Notion gets at most a one-line summary + path |
 | **Dashboard** (review surface) | https://claude.ai/artifact/Lp6FVttHUNMFGWziGZ5uBk, refreshed every morning; how to add a section: `docs/DASHBOARD.md` |
 
