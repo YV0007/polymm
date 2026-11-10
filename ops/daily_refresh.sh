@@ -6,7 +6,7 @@
 #        polymm quality (replay + checks + strict clean windows) and polymm vol (σ series)
 #   3. polymm fair over all days (walk-forward; refreshes the Gamma strikes/outcomes)
 #   4. polymm markouts over all days
-#   5. polymm queue over all days (new days only; --reuse)
+#   5. polymm queue over all days (new days only; --reuse), polymm rewards, polymm sim (--reuse)
 #   6. polymm dashboard  -> reports/dashboard/dashboard_data.json (the dashboard's one data file)
 # Why plots are off: the reports' PNGs live in research/ (tracked); a daily run must not
 # rewrite tracked files. Rerun with plots by hand when a write-up is refreshed.
@@ -77,6 +77,15 @@ if [[ "${SKIP_REWARDS:-0}" != 1 ]] && $P rewards --help >/dev/null 2>&1; then
   $P rewards "${DATES[@]}" --sample 3 --every 600 --no-plots 2>&1 | tail -2 || echo "ERROR: rewards failed"
 else
   echo "rewards: skipped (SKIP_REWARDS=1 or the command is not available yet)"
+fi
+echo "-- sim"
+# Why --reuse: a day's grid and its walk-forward band depend only on that day and earlier ones, so
+# finished days are read back and only the new day runs (~10 min); the last day becomes the new
+# lockbox (D-032). Same guard as rewards: on once `polymm sim` exists.
+if [[ "${SKIP_SIM:-0}" != 1 ]] && $P sim --help >/dev/null 2>&1; then
+  $P sim "${DATES[@]}" --reuse --no-plots 2>&1 | grep -v "Sortedness\|join_asof" | tail -2 || echo "ERROR: sim failed"
+else
+  echo "sim: skipped (SKIP_SIM=1 or the command is not available yet)"
 fi
 echo "-- dashboard"
 $P dashboard | tail -1 || echo "ERROR: dashboard failed"

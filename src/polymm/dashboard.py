@@ -311,8 +311,66 @@ def rewards_section(rw_root: Path) -> tuple[dict, dict, list[dict]]:
     return data, kp, chk
 
 
+def sim_section(sim_root: Path) -> tuple[dict, dict, list[dict]]:
+    """Stage 7 (D-032): the strategy ladder's walk-forward P&L per window with the four terms per
+    filled share, the fill-model band, the latency curve, Gate B and the engine checks.
+    Reads reports/sim only."""
+    j = sim_root / "sim.json"
+    if not j.exists():
+        return {}, {}, []
+    R = json.loads(j.read_text())
+    rungs = _records(sim_root / "table_rungs.parquet")
+    for r in rungs:
+        sh = r.get("shares") or 0
+        for c in ("c1_spread", "c2_adverse", "c3_inventory", "c4_rebate"):
+            r[c + "_c"] = round(100 * r[c] / sh, 4) if sh and r.get(c) is not None else None
+    keep = ["rung", "fold", "windows", "mean", "se", "pnl", "fills", "shares", "sharpe_w", "worst_window", "q_peak",
+            "c1_spread_c", "c2_adverse_c", "c3_inventory_c", "c4_rebate_c"]
+    rungs = [{k: r.get(k) for k in keep} for r in rungs]
+    band = _records(sim_root / "table_band.parquet", ["rung", "fold", "model", "windows", "mean", "se"])
+    lat = _records(sim_root / "table_latency.parquet", ["rung", "fold", "lat_ms", "mean", "se", "fills"])
+    fed = _records(sim_root / "table_fed.parquet") if (sim_root / "table_fed.parquet").exists() else []
+    gate = [{"rung": int(k), **v} for k, v in (R.get("gate_b_by_rung") or {}).items()]
+    # Why fills > 0: a rung that sat out has mean exactly 0, which would "win" against losing rungs
+    test = [r for r in rungs if r["fold"] == "test" and r.get("mean") is not None and (r.get("fills") or 0) > 0]
+    best = max(test, key=lambda r: r["mean"]) if test else {}
+    lb = next((r for r in rungs if r["fold"] == "lockbox" and r["rung"] == best.get("rung")), {})
+    nogap = _records(sim_root / "table_rungs_nogap.parquet", ["rung", "fold", "windows", "mean", "se", "pnl"]) \
+        if (sim_root / "table_rungs_nogap.parquet").exists() else []
+    data = {"sim_rungs": rungs, "sim_rungs_nogap": nogap, "sim_band": band, "sim_latency": lat, "sim_gate": gate, "sim_fed": fed}
+    kp = {"sim_gate_b": R.get("gate_b"), "sim_best_rung": best.get("rung"), "sim_best_mean": best.get("mean"), "sim_best_se": best.get("se"),
+          "sim_best_lockbox_mean": lb.get("mean"), "sim_lockbox": R.get("lockbox"), "sim_test_days": ", ".join(R.get("test_days") or []),
+          "sim_settings": R.get("settings"), "sim_lat_ms": R.get("lat_base_ms")}
+    chk = []
+    ch = R.get("checks") or {}
+    for d, c in sorted(ch.items()):
+        inp = (c or {}).get("inputs") or {}
+        if inp:
+            chk.append({"area": "simulator", "check": f"{d}: ①+②+③ = hold-to-settlement P&L", "result": f"max error {inp.get('identity_err_max', 0):.1e}",
+                        "ok": (inp.get("identity_err_max") or 0) < 1e-9})
+            chk.append({"area": "simulator", "check": f"{d}: fair value at whole seconds = stage 3/4 walk-forward series", "result": str(inp.get("fair_grid_max_abs_err")),
+                        "ok": inp.get("fair_grid_max_abs_err") == 0.0})
+            te = inp.get("fair_tick_at_own_spot_max_abs_err")
+            chk.append({"area": "simulator", "check": f"{d}: tick formula at the second's own BTC price = that second's fair value", "result": str(te),
+                        "ok": te is not None and te < 1e-6})
+            chk.append({"area": "simulator", "check": f"{d}: no fills or order-log rows truncated", "result": str(inp.get("overflow_total")),
+                        "ok": inp.get("overflow_total") == 0})
+        if "do_nothing_fills" in (c or {}):
+            chk.append({"area": "simulator", "check": f"{d}: do-nothing strategy has no fills", "result": str(c["do_nothing_fills"]), "ok": c["do_nothing_fills"] == 0})
+        rep = (c or {}).get("stage5_reproduction") or {}
+        if rep:
+            ok = all(v.get("fill_qty_exact") == 1.0 and v.get("reject_agree") == 1.0 for k, v in rep.items() if isinstance(v, dict))
+            chk.append({"area": "simulator", "check": f"{d}: stage-5 probes reproduced exactly", "result": f"{rep.get('probes')} probes, 3 cancel models", "ok": ok})
+    viol = R.get("delay_violations") or []
+    chk.append({"area": "simulator", "check": "more latency never pays (beyond 2 SE)", "result": f"{len(viol)} violations", "ok": not viol})
+    nz = R.get("noise_check") or {}
+    chk.append({"area": "simulator", "check": "a noise 'fair value' does not beat the true one", "result": f"{sum(v['noisy_not_better_2se'] for v in nz.values())} of {len(nz)}",
+                "ok": all(v["noisy_not_better_2se"] for v in nz.values()) if nz else False})
+    return data, kp, chk
+
+
 def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict[str, Path], tests: bool = True,
-          q_root: Path = Path("reports/queue"), rw_root: Path = Path("reports/rewards")) -> dict:
+          q_root: Path = Path("reports/queue"), rw_root: Path = Path("reports/rewards"), sim_root: Path = Path("reports/sim")) -> dict:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
     fair_params = json.loads((fair_root / "fair_params.json").read_text()) if (fair_root / "fair_params.json").exists() else {}
@@ -381,6 +439,9 @@ def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict
     r_data, r_kpis, r_chk = rewards_section(rw_root)
     kpis.update(r_kpis)
     chk += r_chk
+    s_data, s_kpis, s_chk = sim_section(sim_root)
+    kpis.update(s_kpis)
+    chk += s_chk
     rec = recorder_health(data_dirs)
     chk += recorder_checks(rec)
     chk.append({"area": "code", "check": "test suite", "result": t["summary"], "ok": bool(t["passed"]) and not t["failed"]})
@@ -412,6 +473,7 @@ def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict
         "history": hist,
         **q_data,
         **r_data,
+        **s_data,
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")

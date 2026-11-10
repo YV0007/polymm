@@ -257,6 +257,22 @@ def cmd_rewards(args) -> int:
     return 0
 
 
+def cmd_sim(args) -> int:
+    from .sim.run import SimConfig, run_sim
+
+    # Why on top of stages 3–6: the engine replays stage 5's level streams and queue model, the fair
+    # value is stage 3's walk-forward series moved by every Binance tick, rung 4 reads stage-5 probes
+    # of earlier days, rung 5 scores rewards with stage 6's rules.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+    sc = SimConfig(dates=sorted(args.dates), fair_root=Path(args.fair_root), queue_root=Path(args.queue_root), out=Path(args.out),
+                   data_dirs=[Path(d) for d in args.data], spot_root=Path(args.spot_root), plot_dir=Path(args.plots_out),
+                   plots=not args.no_plots, reuse=args.reuse, fed=not args.no_fed)
+    R = run_sim(sc)
+    print(f"sim {', '.join(sc.dates)}: {R['settings']} settings, test {R['test_days']}, lockbox {R['lockbox']}, Gate B {R['gate_b']}; "
+          f"report {sc.out / 'summary.md'}")
+    return 0
+
+
 def cmd_dashboard(args) -> int:
     from .dashboard import build
 
@@ -355,6 +371,17 @@ def main(argv: list[str] | None = None) -> int:
     rw.add_argument("--sample", type=int, default=0, help="take N REST snapshots of every paying market's book first")
     rw.add_argument("--every", type=int, default=600, help="seconds between snapshots")
     rw.add_argument("--no-plots", action="store_true")
+    sm = sub.add_parser("sim", help="simulator: our quotes in the replayed book, strategy ladder, walk-forward, fill band, latency, Gate B (stage 7)")
+    sm.add_argument("dates", nargs="+", help="YYYY-MM-DD ... ; the first is training only, the last is the lockbox")
+    sm.add_argument("--fair-root", default="reports/fair")
+    sm.add_argument("--queue-root", default="reports/queue", help="stage-5 probes (rung 4's value table, the reproduction check)")
+    sm.add_argument("--out", default="reports/sim")
+    sm.add_argument("--data", nargs="+", default=["data_vps", "data"], help="event stores, in preference order")
+    sm.add_argument("--spot-root", default="data_vps", help="Binance quotes (fair value between seconds)")
+    sm.add_argument("--plots-out", default="research/simulator")
+    sm.add_argument("--reuse", action="store_true", help="reuse pass-1 grid results of days already run")
+    sm.add_argument("--no-fed", action="store_true", help="skip the Fed rewards rung")
+    sm.add_argument("--no-plots", action="store_true")
     db = sub.add_parser("dashboard", help="gather all dashboard numbers into one JSON file")
     db.add_argument("--out", default="reports/dashboard/dashboard_data.json")
     db.add_argument("--fair-root", default="reports/fair")
@@ -373,6 +400,7 @@ def main(argv: list[str] | None = None) -> int:
         "markouts": cmd_markouts,
         "queue": cmd_queue,
         "rewards": cmd_rewards,
+        "sim": cmd_sim,
         "dashboard": cmd_dashboard,
     }[args.cmd](args)
 

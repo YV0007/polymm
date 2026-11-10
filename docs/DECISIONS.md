@@ -230,3 +230,51 @@ Template:
 - **Rejected:** keeping "128 ms = our WebSocket lag" (wrong leg); adding the feed lag on top of a receive-clock replay (counts it twice); a constant latency (hides the tail that coincides with jumps).
 - **Ref:** `ops/feed_lag.py`, `src/polymm/queue/engine.py` (`BASE_LAT_MS`), `research/queue_fill.md` §1 correction, `research/quality_report.md` (Binance recv − event p50 128 ms), D-022, D-026, D-028, D-030
 - **Status:** active
+
+### D-032 · 2026-11-10 · Simulator v1: stage 5's queue engine run as a strategy, tick-level fair value, walk-forward ladder, Gate B FAIL on BTC 15m
+- **Decision:** `polymm.sim` replays each market segment (strict clean window ∩ live window) event by event on our receive clock with our orders inserted:
+  - **Queue model and clock:** stage 5's queue model in a compiled engine. Ties go market-before-ours, orders are post-only, cancels land after latency and never before their order, inventory carries across data gaps.
+  - **Latency:** order-path only (D-031), 75 ms base × lognormal jitter (σ 0.126) plus the previous second's Polymarket feed lag above 12 ms.
+  - **Fair value:** stage 3's walk-forward value at each second, moved between seconds by every Binance mid change through the BTC model, other inputs held.
+  - **Strategy ladder:**
+    - 0 symmetric on a 2 s timer;
+    - 1 event-driven (stale cancel);
+    - 2 reservation price $r = m - q\gamma\sigma_p^2(T-t)$, lean capped at 5 ¢, reduce-only at the end;
+    - 3 jump guard;
+    - 4 selective by stage 5's value table of earlier days;
+    - 5 rewards on reward markets (Fed), scored after the run with stage 6's rules.
+  - **Attribution per fill:** ① spread, ② adverse selection to 60 s, ③ to settlement, ④ rebate (+ rewards); ①+②+③ = $s(V-P)q$ exactly.
+  - **Experiments:**
+    - 78 settings on every day; walk-forward selection (day $k$ chooses on days $< k$), the last day a lockbox;
+    - the selected settings rerun under four cancel models and six latencies (0–1000 ms);
+    - deflated Sharpe over all trials, plateau test, windows needed.
+  - **Gate B** = pessimistic out-of-sample lower 95 % > 0, lockbox mean > 0, DSR ≥ 0.95 and a plateau. The sanity checks (delay, random signal, do-nothing) veto it.
+  - **Operations:** daily refresh step `polymm sim … --reuse`, which runs only the new day; earlier days' selections never change.
+- **Why:**
+  - **Data:** 11-06…09 (test 11-07/08, 163 windows; lockbox 11-09, 96).
+  - **Gate B FAIL on every rung.** ② exceeds ① by 1.6–2.5 ¢ per filled share at 60 s on every rung, and the rebate is 0.29 ¢. USD per window (10 shares, matched, 75 ms):
+    - rung 0: −3.41 ± 1.65;
+    - rung 1: −5.30 ± 2.03;
+    - rung 2: −5.04 ± 1.61;
+    - rung 3 (jump guard): −0.52 ± 1.54, about 90 % of the loss removed;
+    - rung 4: sits out (stage-5 table negative).
+  - **Lockbox:** −2.27 / −1.85 / −1.20 / −1.18 / −0.44.
+  - **Robustness:** the same under all four cancel models and on gap-free windows; DSR 0.00 with 78 trials.
+  - **Latency:** rungs 1–2 lose more at 0 ms than at 75 ms. At 75 ms, post-only rejections filter out the price-improving orders that chase a fair-value tick; at 0 ms these land and are filled through, at −7 ¢. Within 2 SE.
+  - **Fed rewards rung:** 0.24–0.51 USD/day rewards vs −14…+1.4 USD/day fill P&L.
+  - **Checks:**
+    - stage-5 probes replayed exactly (fill quantity and rejections 100 %, three cancel models);
+    - identity error 1.8e-15;
+    - fair at seconds = fair_oos exactly; tick formula self-check 4e-12;
+    - do-nothing 0 fills; noise fair never better (4/4); 0 delay violations; 0 truncation;
+    - 11 unit tests.
+  - **Audit:** an independent audit before commit found the γ grid ~1000× too large (rerun), rung 5 joining a best bid above fair, rewards over covered minutes only (1.6× on 11-07), checks not vetoing the gate, a vacuous fair check, and silent truncation; all fixed.
+- **Rejected:**
+  - one simulated P&L number (D-028);
+  - a constant latency;
+  - re-implementing the queue model (the engine shares stage 5's rules and is checked against it);
+  - selecting on all days;
+  - an uncapped inventory lean;
+  - averaging rewards over covered minutes only.
+- **Ref:** `src/polymm/sim/`, `tests/test_sim.py`, `research/simulator.md`, `reports/sim/summary.md`, `reports/sim/sim.json`; dashboard keys `sim_*`; `ops/daily_refresh.sh` (sim step); D-024, D-026, D-027, D-028, D-029, D-031
+- **Status:** active (v1, D-027): a floor for simple rules, not a verdict on BTC 15m. Next by the attribution: ② dominates, so a better jump/σ signal first, then the grid edge (wider h, more sensitive jump trigger), then more days.
