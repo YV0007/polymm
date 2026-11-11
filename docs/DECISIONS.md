@@ -278,3 +278,24 @@ Template:
   - averaging rewards over covered minutes only.
 - **Ref:** `src/polymm/sim/`, `tests/test_sim.py`, `research/simulator.md`, `reports/sim/summary.md`, `reports/sim/sim.json`; dashboard keys `sim_*`; `ops/daily_refresh.sh` (sim step); D-024, D-026, D-027, D-028, D-029, D-031
 - **Status:** active (v1, D-027): a floor for simple rules, not a verdict on BTC 15m. Next by the attribution: ② dominates, so a better jump/σ signal first, then the grid edge (wider h, more sensitive jump trigger), then more days.
+
+### D-033 · 2026-11-11 · Diagnose the strategy before choosing where to dig: BTC 15m deepening vs a market screen, decided on evidence
+- **Decision:**
+  - **Where we are:** the first pass of the pipeline is complete end to end (data collection → replay → fair value → adverse selection → queue → rewards → simulator, D-017/D-027). Its results are raw v1 floors, not verdicts.
+  - **Next phase: a strategy diagnosis, before any new model is built.** The aim is to see, under the loop, exactly where the simulated strategy loses and earns money on BTC 15m:
+    - which fills, moments, placements and market states carry the loss (② adverse selection) and which carry the gains (① spread, ③, ④);
+    - where the bottlenecks are: signal timing, queue position, fill selection, inventory, or the market's own structure;
+    - which levers could change the sign, each with a rough size.
+  - **Then reason about the BTC 15m market itself**: who trades it, how its price discovery and jumps work, what a maker is up against. State the assumptions explicitly, and run small tests and research to check them.
+  - **Then lay out the options with evidence**, and only after that choose:
+    - (a) stay on BTC 15m and dig, through stronger external BTC modelling (signal timing, σ, cross-venue lead) and/or a conditional-expectation model for fill selection (ML on E[a | state]);
+    - (b) screen other markets first;
+    - (c) a hybrid: keep working BTC 15m while screening others.
+  - **Format:** the breakdown is delivered in the format Yehor specifies when he asks for it. Nothing is built for this phase until then.
+- **Why:** the v1 decomposition only says "② > ①". That names the loss but not its mechanism, so it can't yet rank levers or tell a fixable problem (a slow or noisy signal, a bad placement) from a structural one (the market's flow is informed faster than any maker can react). Choosing where to dig, or leaving the market, before that is known would be a guess. Diagnosis first is D-027's "attribution decides what to deepen", applied at the strategy level.
+- **Rejected:**
+  - building a fancier model straight away (ML selection or better BTC modelling) without knowing which loss it would remove;
+  - abandoning BTC 15m on v1 numbers;
+  - screening other markets blind, without knowing what made BTC 15m fail.
+- **Ref:** D-017 (Global plan), D-027 (pipeline first, v1 floors), D-032 (simulator v1 results), `research/simulator.md`
+- **Status:** active, waiting for the breakdown request and its format
