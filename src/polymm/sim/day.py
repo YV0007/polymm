@@ -71,11 +71,17 @@ _NOSC = (np.zeros(0, np.int64), np.zeros(0, np.int64), np.zeros(0, np.int64), np
 def run_day(P: Prepared, rung: int, prm: np.ndarray, model: str = "matched", lat_ms: float = 75.0, seed: int = 0,
             vtab: np.ndarray | None = None, vtab_n: np.ndarray | None = None, vmin_n: int = 200,
             family: str = "btc_15m", script: dict | None = None, maxo: int = 16, maxf: int = 20000,
-            burst: bool = True, fair_noise_c: float = 0.0) -> dict:
+            burst: bool = True, fair_noise_c: float = 0.0, fair_lead_ms: float = 0.0, queue_front: bool = False,
+            cx_lat_ms: float = -1.0) -> dict:
     """Run one setting over the day's segments of `family`. Returns fills, orders, per-segment
     summary (inventory at the end, peak inventory, decisions, rejections).
     fair_noise_c > 0 replaces the fair value by fair + N(0, noise) per tick: the random-signal
-    check (a signal with no information must not beat the true fair value)."""
+    check (a signal with no information must not beat the true fair value).
+    Oracle switches (diagnosis, D-034; each removes one handicap, so the P&L gain bounds that lever):
+    fair_lead_ms   the strategy sees the fair value this many ms EARLIER than it happened (a better
+                   or faster BTC signal); attribution still uses the true fair value
+    queue_front    our order is first in line at its price on arrival
+    cx_lat_ms      cancel latency, separately from the order latency (-1 = the same)"""
     rng = np.random.default_rng(seed + 991)
     vt = vtab if vtab is not None else np.zeros((3, 4, 4))
     vn = vtab_n if vtab_n is not None else np.zeros((3, 4, 4))
@@ -93,22 +99,26 @@ def run_day(P: Prepared, rung: int, prm: np.ndarray, model: str = "matched", lat
             sc = (s["t"], s["s"], s["pk"], s["sz"], s["tc"])
         q0 = q_by_yes.get(r["yes"], 0.0)
         fp = a["fr"]["p"]
+        ft = a["fr"]["t"] - np.int64(fair_lead_ms * 1e6) if fair_lead_ms else a["fr"]["t"]
         if fair_noise_c > 0 and len(fp):
             fp = np.clip(fp + rng.normal(0.0, fair_noise_c / 100.0, len(fp)), 0.001, 0.999)
         out = E.run_segment(a["el"]["t"], a["el"]["s"], a["el"]["pk"], a["el"]["cons"], a["el"]["res"], a["el"]["L"], a["el"]["addt"],
                             a["el"]["tord"], a["tr"]["t"], a["tr"]["s"], a["tr"]["pk"], a["tr"]["v"],
-                            a["bk"]["t"], a["bk"]["bid_pk"], a["bk"]["ask_pk"], a["fr"]["t"], fp, a["fr"]["v2"],
+                            a["bk"]["t"], a["bk"]["bid_pk"], a["bk"]["ask_pk"], ft, fp, a["fr"]["v2"],
                             np.int64(P.lag_sec0), lag_extra, np.int64(r["t0"]), np.int64(r["t1"]), np.int64(r["t_end_s"] * NS),
                             np.int64(r["t_start_s"] or 0), float(q0), np.int64(rung), prm, np.int64(E.MODEL_ID[model]), float(lat_ms),
                             float(JITTER), np.int64(seed * 100003 + k), np.int64(TICK),
-                            vt, np.float64(vmin_n), vn, *sc, np.int64(max(maxo, len(sc[0]) + 4) if script else maxo), np.int64(maxf))
+                            vt, np.float64(vmin_n), vn, *sc, np.int64(max(maxo, len(sc[0]) + 4) if script else maxo), np.int64(maxf),
+                            bool(queue_front), float(cx_lat_ms))
         (f_t, f_tpre, f_s, f_pk, f_q, f_thr, f_xarr, f_typ, f_oid, f_inv,
-         g_id, g_tsend, g_tarr, g_tend, g_s, g_pk, g_sz, g_fill, g_end, g_typ, q, q_peak, n_dec, n_rej, n_ord, ovf) = out
+         g_id, g_tsend, g_tarr, g_tend, g_s, g_pk, g_sz, g_fill, g_end, g_typ, q, q_peak, n_dec, n_rej, n_ord, ovf,
+         f_cxp, f_tarr, f_tsend) = out
         q_by_yes[r["yes"]] = q
         base = {"yes": r["yes"], "condition_id": r["condition_id"], "seg": k}
         if len(f_t):
             F.append(pl.DataFrame({"t": f_t, "t_pre": f_tpre, "s": f_s, "pk": f_pk, "qty": f_q, "through": f_thr, "x_arr": f_xarr,
-                                   "typ": f_typ, "oid": f_oid, "inv": f_inv}).with_columns(**{c: pl.lit(v) for c, v in base.items()}))
+                                   "typ": f_typ, "oid": f_oid, "inv": f_inv,
+                                   "cx_pending": f_cxp, "t_arr_o": f_tarr, "t_send_o": f_tsend}).with_columns(**{c: pl.lit(v) for c, v in base.items()}))
         if len(g_id):
             O.append(pl.DataFrame({"oid": g_id, "t_send": g_tsend, "t_arr": g_tarr, "t_end": g_tend, "s": g_s, "pk": g_pk, "size": g_sz,
                                    "filled": g_fill, "end": g_end, "typ": g_typ}).with_columns(**{c: pl.lit(v) for c, v in base.items()}))

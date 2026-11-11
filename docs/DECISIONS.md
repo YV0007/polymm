@@ -299,3 +299,41 @@ Template:
   - screening other markets blind, without knowing what made BTC 15m fail.
 - **Ref:** D-017 (Global plan), D-027 (pipeline first, v1 floors), D-032 (simulator v1 results), `research/simulator.md`
 - **Status:** active, waiting for the breakdown request and its format
+
+### D-034 · 2026-11-11 · Strategy diagnosis: the loss is informed takers ~0.5–1 s ahead of our fair value; rank the levers by oracle
+- **Decision:**
+  - **What:** `polymm diagnose` diagnoses the walk-forward-selected rung 1 and rung 3 settings on every out-of-sample day (11-07…11-10, 355 windows). It uses five tools:
+    - **fill anatomy:** each fill labelled A cancel in flight / B stale not pulled / C swept through / D at our level, sliced by order age, minute, spread, recent fair move and placement;
+    - **the markout curve** of our fills against the average maker's;
+    - **oracle counterfactuals**, each the same setting with one handicap removed (fair value 127 ms / 1 s / 5 s / 60 s earlier, zero order latency, instant cancels, first in queue, colocated, all); the gain is an upper bound on that lever;
+    - **the race:** after each fair jump, takers trading in its direction before and after we see it, with an opposite-direction control;
+    - **a walk-forward predictability test** of the next 1 s fair move, plus a walk-forward selection model on order send-time state and an exploratory end-of-window rule.
+  - **Engine changes:** each fill now records cancel-in-flight, order arrival and send times. `run_day` gained the switches `fair_lead_ms`, `queue_front` and `cx_lat_ms` (defaults keep every earlier result; 12 unit tests).
+  - **Lever priority** for the next phase (D-033's crossroads):
+    1. short-horizon (0.25–1 s) fair-value prediction from new inputs, as research first;
+    2. cheap exposure rules into the ladder now (reduce-only near expiry; don't chase with fresh or price-improving orders);
+    3. faster cancels;
+    4. a selection model and volatility modelling only after the new inputs exist;
+    5. not raw order speed or queue priority.
+  - **In parallel**, screen other markets on the market factors in the report: baseline maker net, takers ahead of an external driver, jump rate per tick, rewards.
+- **Why:**
+  - **Where the loss is:** fills swept through our price while our fair value said we were in the money carry 80 % of rung 1's loss; fills that beat our in-flight cancel carry 27 %; ordinary fills at our level make money (+0.48 / +3.96 ¢ per share).
+  - **When:** 79–87 % of the adverse move happens within 1 s of the fill.
+  - **Oracles (rung 1, USD per window vs −4.54):**
+    - fair value 1 s earlier +8.00 ± 1.08 (to +3.45), 5 s +20.2;
+    - no Binance feed lag −0.23;
+    - instant cancels +0.81;
+    - zero order latency −2.40, first in queue −0.68, colocated −1.26.
+    - Rung 3: fair 1 s +2.24, instant cancels +0.55 (to −0.02).
+  - **The race:** takers trade in a jump's direction in the 500 ms before our feed shows it for 29–60 % of 34.5 k jumps, against 13–23 % in the control, rising with jump size.
+  - **Predictability:** what we already record predicts the next 1 s fair move with R² 1–1.5 % out of sample (corr 0.10–0.13; best inputs Polymarket taker flow and BTC 1 s return).
+  - **Selection:** on order state, AUC 0.46–0.54.
+  - **End of window:** minutes 13–14 carry 48 % of rung 1's loss; reduce-only in the last 3 min takes rung 1 to −2.34 (exploratory).
+  - **Market vs algo:** the average resting maker nets +0.04 ¢ per share after the rebate (stage 4); rung 1 nets −2.40 ¢. The market offers no free edge, and the loss is our gap to the average maker.
+- **Rejected:**
+  - reading "② > ①" as a volatility or fair-level problem: the loss lands too fast;
+  - investing in raw speed or queue priority: the oracles are zero or negative;
+  - building an ML selection model on today's inputs: AUC ≈ 0.5;
+  - calling BTC 15m unfixable before testing faster BTC sources.
+- **Ref:** `src/polymm/sim/diagnose.py`, `research/strategy_diagnosis.md`, `reports/sim_diag/`, D-024, D-026, D-031, D-032, D-033; dashboard keys `diag_*`
+- **Status:** active. Next, decided by Yehor: the prediction study (record faster BTC sources, measure next-second R², plug into the simulator), cheap rules into the ladder, and the market-factor screen.

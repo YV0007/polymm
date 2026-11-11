@@ -369,8 +369,32 @@ def sim_section(sim_root: Path) -> tuple[dict, dict, list[dict]]:
     return data, kp, chk
 
 
+def diag_section(root: Path) -> tuple[dict, dict, list[dict]]:
+    """Strategy diagnosis (D-034): what each lever is worth at most (oracles), the loss by how the
+    fill happened, the markout curve of our fills against the average maker. Reads reports/sim_diag."""
+    if not (root / "table_oracles.parquet").exists():
+        return {}, {}, []
+    orc = _records(root / "table_oracles.parquet", ["rung", "oracle", "mean", "gain_per_window", "gain_se"])
+    mech = _records(root / "table_by_mech.parquet", ["rung", "mech", "fills", "share_of_shares", "c1_c", "c2_c", "adv_0_1s_c", "net_c", "usd", "share_of_pnl"])
+    sig = _records(root / "table_signature.parquet", ["rung", "tau_ms", "markout_c"])
+    ms = root / "table_maker_signature.parquet"
+    if ms.exists():
+        sig += [{"rung": "maker", **r} for r in _records(ms, ["tau_ms", "markout_c"], pl.col("tau_ms") <= 60000)]
+    race = _records(root / "table_race_by_size.parquet") if (root / "table_race_by_size.parquet").exists() else []
+    pred = _records(root / "table_predictability.parquet", ["test_day", "r2_oos", "corr"]) if (root / "table_predictability.parquet").exists() else []
+    s1 = {r["tau_ms"]: r["markout_c"] for r in sig if r["rung"] == 1}
+    get = lambda r, o: next((x for x in orc if x["rung"] == r and x["oracle"] == o), {})
+    big = next((x for x in race if x.get("jump_size") == ">=4c"), {})
+    kp = {"diag_loss_within_1s_r1": (s1[0] - s1[1000]) / (s1[0] - s1[60000]) if s1.get(0) is not None and s1.get(60000) not in (None, s1.get(0)) else None,
+          "diag_base_r1": get(1, "base").get("mean"), "diag_lead1s_gain_r1": get(1, "fair_lead_1s").get("gain_per_window"),
+          "diag_cancel0_gain_r1": get(1, "cancel0").get("gain_per_window"), "diag_lat0_gain_r1": get(1, "lat0").get("gain_per_window"),
+          "diag_preempted_big": big.get("share_preempted_500ms"), "diag_preempted_big_control": big.get("share_opposite_500ms_control"),
+          "diag_pred_r2": max((p["r2_oos"] for p in pred), default=None)}
+    return {"diag_oracles": orc, "diag_mech": mech, "diag_signature": sig}, kp, []
+
+
 def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict[str, Path], tests: bool = True,
-          q_root: Path = Path("reports/queue"), rw_root: Path = Path("reports/rewards"), sim_root: Path = Path("reports/sim")) -> dict:
+          q_root: Path = Path("reports/queue"), rw_root: Path = Path("reports/rewards"), sim_root: Path = Path("reports/sim"), diag_root: Path = Path("reports/sim_diag")) -> dict:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
     fair_params = json.loads((fair_root / "fair_params.json").read_text()) if (fair_root / "fair_params.json").exists() else {}
@@ -442,6 +466,8 @@ def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict
     s_data, s_kpis, s_chk = sim_section(sim_root)
     kpis.update(s_kpis)
     chk += s_chk
+    g_data, g_kpis, _ = diag_section(diag_root)
+    kpis.update(g_kpis)
     rec = recorder_health(data_dirs)
     chk += recorder_checks(rec)
     chk.append({"area": "code", "check": "test suite", "result": t["summary"], "ok": bool(t["passed"]) and not t["failed"]})
@@ -474,6 +500,7 @@ def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict
         **q_data,
         **r_data,
         **s_data,
+        **g_data,
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")

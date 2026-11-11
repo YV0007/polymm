@@ -128,7 +128,7 @@ def run_segment(el_t, el_s, el_pk, el_cons, el_res, el_L, el_addt, el_tord,
                 rung, prm, model, lat_ms, jitter, seed, tick,
                 vtab, vmin_n, vtab_n,
                 sc_t, sc_s, sc_pk, sc_sz, sc_tc,
-                maxo, maxf):
+                maxo, maxf, queue_front, cx_lat_ms):
     np.random.seed(seed)
     # ---------------- state ----------------
     size_b = np.zeros(1001)       # others' size per price, bid side (pk 0..1000)
@@ -159,6 +159,11 @@ def run_segment(el_t, el_s, el_pk, el_cons, el_res, el_L, el_addt, el_tord,
     f_typ = np.zeros(maxf, np.int64)
     f_oid = np.zeros(maxf, np.int64)
     f_inv = np.zeros(maxf)               # inventory after the fill
+    f_cxp = np.zeros(maxf, np.bool_)     # our cancel of this order was already in flight
+    f_tarr = np.zeros(maxf, np.int64)    # when the order reached the book
+    f_tsend = np.zeros(maxf, np.int64)   # when we decided to send it
+    # Why a separate cancel latency: the oracle "instant cancel" isolates the cancel race
+    cx_lat = lat_ms if cx_lat_ms < 0 else cx_lat_ms
     nf = 0
     # outputs: orders
     maxlog = maxf * 4
@@ -306,6 +311,9 @@ def run_segment(el_t, el_s, el_pk, el_cons, el_res, el_L, el_addt, el_tord,
                                 f_typ[nf] = o_typ[k]
                                 f_oid[nf] = o_id[k]
                                 f_inv[nf] = q
+                                f_cxp[nf] = o_tcx[k] != BIG
+                                f_tarr[nf] = o_tarr[k]
+                                f_tsend[nf] = o_tsend[k]
                                 nf += 1
                             else:
                                 overflow += 1
@@ -338,6 +346,9 @@ def run_segment(el_t, el_s, el_pk, el_cons, el_res, el_L, el_addt, el_tord,
                                 f_typ[nf] = o_typ[k]
                                 f_oid[nf] = o_id[k]
                                 f_inv[nf] = q
+                                f_cxp[nf] = o_tcx[k] != BIG
+                                f_tarr[nf] = o_tarr[k]
+                                f_tsend[nf] = o_tsend[k]
                                 nf += 1
                             else:
                                 overflow += 1
@@ -381,7 +392,8 @@ def run_segment(el_t, el_s, el_pk, el_cons, el_res, el_L, el_addt, el_tord,
                         decide = True
                     else:
                         o_st[k] = 2
-                        o_x[k] = size_b[p] if s == 1 else size_a[p]
+                        # queue_front: the oracle "first in line" (x = 0 on arrival)
+                        o_x[k] = 0.0 if queue_front else (size_b[p] if s == 1 else size_a[p])
                         o_xarr[k] = o_x[k]
                         o_E[k] = 0.0
                         o_typ[k] = _type_of(s, p, bid, ask, tick)
@@ -551,7 +563,7 @@ def run_segment(el_t, el_s, el_pk, el_cons, el_res, el_L, el_addt, el_tord,
                 # cancel: lands after the latency, never before the order itself
                 sec = t // NSL - lag_sec0
                 burst = lag_extra[sec] if 0 <= sec < len(lag_extra) else 0.0
-                tcx = t + _latency(lat_ms, jitter, burst)
+                tcx = t + _latency(cx_lat, jitter, burst)
                 if tcx < o_tarr[k]:
                     tcx = o_tarr[k]
                 o_tcx[k] = tcx
@@ -585,4 +597,4 @@ def run_segment(el_t, el_s, el_pk, el_cons, el_res, el_L, el_addt, el_tord,
                 ng += 1
     return (f_t[:nf], f_tpre[:nf], f_s[:nf], f_pk[:nf], f_q[:nf], f_thr[:nf], f_xarr[:nf], f_typ[:nf], f_oid[:nf], f_inv[:nf],
             g_id[:ng], g_tsend[:ng], g_tarr[:ng], g_tend[:ng], g_s[:ng], g_pk[:ng], g_sz[:ng], g_fill[:ng], g_end[:ng], g_typ[:ng],
-            q, q_peak, n_dec, n_rej, next_id, overflow)
+            q, q_peak, n_dec, n_rej, next_id, overflow, f_cxp[:nf], f_tarr[:nf], f_tsend[:nf])

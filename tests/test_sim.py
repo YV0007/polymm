@@ -12,7 +12,7 @@ S = 1_000_000_000
 BIG = np.iinfo(np.int64).max
 
 
-def _run(el, tr, bk, fr, script=None, rung=-1, prm=None, model="matched", lat_ms=0.0, t1=100 * S, t_end=200 * S, q0=0.0):
+def _run(el, tr, bk, fr, script=None, rung=-1, prm=None, model="matched", lat_ms=0.0, t1=100 * S, t_end=200 * S, q0=0.0, front=False):
     i64, f64 = np.int64, np.float64
     el = el or []
     tr = tr or []
@@ -27,7 +27,7 @@ def _run(el, tr, bk, fr, script=None, rung=-1, prm=None, model="matched", lat_ms
                         i64(rung), prm if prm is not None else E.params(), i64(E.MODEL_ID[model]), float(lat_ms), 0.0, i64(1), i64(10),
                         np.zeros((3, 4, 4)), 200.0, np.zeros((3, 4, 4)),
                         col(sc, 0, i64), col(sc, 1, i64), col(sc, 2, i64), col(sc, 3, f64), np.array([r[4] for r in sc], dtype=i64),
-                        i64(16), i64(1000))
+                        i64(16), i64(1000), front, -1.0)
     f_q = out[4]
     return {"fill_qty": float(f_q.sum()), "fills": out[0], "through": out[5], "end": out[18], "q": out[20], "orders": out[24], "n_rej": out[23],
             "o_s": out[14], "o_pk": out[15]}
@@ -127,3 +127,9 @@ def test_rewards_rung_never_joins_a_best_price_through_fair():
     out = _run([], [], [(0, 500, 510)], [(0, 0.48)], rung=5, prm=E.params(h=1.0), t1=3 * S)
     bids = out["o_pk"][out["o_s"] == 1]
     assert len(bids) and bids.max() <= 470
+
+
+def test_queue_front_oracle_fills_first():
+    # first in line: the first taker's 4 shares reach us at once, the second's 8 complete the 5
+    out = _run(EL, [], BK, FR, ORDER, model="pess", front=True)
+    assert out["fill_qty"] == 5.0 and out["fills"][0] == 2 * S

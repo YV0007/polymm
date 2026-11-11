@@ -273,6 +273,17 @@ def cmd_sim(args) -> int:
     return 0
 
 
+def cmd_diagnose(args) -> int:
+    from .sim.diagnose import run
+
+    # Why on top of `polymm sim`: it diagnoses the settings the simulator's walk-forward selected,
+    # on the same days and inputs (D-034).
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+    R = run(sim_root=Path(args.sim_root), out=Path(args.out), plot_dir=None if args.no_plots else Path(args.plots_out))
+    print(f"diagnose {', '.join(R['res']['days'])}: rungs {R['res']['rungs']}, {len(R['res']['oracles'])} runs each; tables in {args.out}")
+    return 0
+
+
 def cmd_dashboard(args) -> int:
     from .dashboard import build
 
@@ -382,6 +393,11 @@ def main(argv: list[str] | None = None) -> int:
     sm.add_argument("--reuse", action="store_true", help="reuse pass-1 grid results of days already run")
     sm.add_argument("--no-fed", action="store_true", help="skip the Fed rewards rung")
     sm.add_argument("--no-plots", action="store_true")
+    dg = sub.add_parser("diagnose", help="strategy diagnosis: fill anatomy, markout curve, oracle levers, the race, selection (stage 7)")
+    dg.add_argument("--sim-root", default="reports/sim")
+    dg.add_argument("--out", default="reports/sim_diag")
+    dg.add_argument("--plots-out", default="research/strategy_diagnosis")
+    dg.add_argument("--no-plots", action="store_true")
     db = sub.add_parser("dashboard", help="gather all dashboard numbers into one JSON file")
     db.add_argument("--out", default="reports/dashboard/dashboard_data.json")
     db.add_argument("--fair-root", default="reports/fair")
@@ -401,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
         "queue": cmd_queue,
         "rewards": cmd_rewards,
         "sim": cmd_sim,
+        "diagnose": cmd_diagnose,
         "dashboard": cmd_dashboard,
     }[args.cmd](args)
 
