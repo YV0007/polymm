@@ -53,8 +53,15 @@ fit on the kept rows; scores, calibration, ŵ and the shrink check from the pool
 ```
 
 Results stay the same up to floating-point rounding (~1e-12); the walk-forward fair series is
-unchanged. Memory: ~3–4 GB at 5 days, ~6 GB at 30 days; only the fit rows grow. Next knob when
-they get big (~2 months): cap the training window to the last N days.
+unchanged. Next knob when the fit rows get big (~1–2 months): cap the training window to the last N days.
+
+**Built 2026-11-11 (D-035), measured at 5 days.** `polymm fair` 30.0 GB (killed) → ~6.9 GB;
+markouts `fair_oos` 15.1 → 5.1 GB; sim `fair_seconds` (via the switch) 14.1 → 5.2 GB. The peak is
+now set by the largest single day (2.6 M rows), not by the number of days. Two per-day hot spots
+were also removed on the way: loading all 40–65 M top-of-book updates of a day (→ last update per
+token-second, one hour at a time) and joins that copied the whole day. Above the first estimate of 3–4 GB:
+the day itself, built and applied, still takes ~4.5–5 GB at peak; next levers if needed are
+category ids for the long text ids (~half of a day's memory) or building the grid per family.
 
 ## 3. Target layout
 

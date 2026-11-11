@@ -337,3 +337,43 @@ Template:
   - calling BTC 15m unfixable before testing faster BTC sources.
 - **Ref:** `src/polymm/sim/diagnose.py`, `research/strategy_diagnosis.md`, `reports/sim_diag/`, D-024, D-026, D-031, D-032, D-033; dashboard keys `diag_*`
 - **Status:** active. Next, decided by Yehor: the prediction study (record faster BTC sources, measure next-second R², plug into the simulator), cheap rules into the ladder, and the market-factor screen.
+
+### D-035 · 2026-11-11 · Fair value one day in memory at a time: `polymm fair`, markouts `fair_oos` (and sim, via the same helper)
+- **Decision:**
+  - **Walk-forward one day at a time** (`polymm.fair.walk.walk_forward`). Build one day's grid, apply the parameters fitted on the days before it, hand the result to the caller, then keep only what later fits need and drop the day.
+    - **Kept per day:** the Stoikov bucket sums and counts (`stoikov_sums`), plus the BTC fit rows (15m + active ladder, finite model) in 13 columns with the token id as a category. That is ~25–100 MB a day.
+    - `fit_params(..., stoikov=)` takes the pooled table; `apply_params(..., warmup=)` takes the previous hour.
+    - Signatures are otherwise unchanged.
+  - **`polymm fair` runs two passes.**
+    1. Walk-forward. Each held-out day is reduced to per-cluster sufficient statistics: `score_cells` / `score_pooled` with centred moments merged by Chan's formula, and calibration sums. The day's grid is cached in a temp folder.
+    2. Final fit from the store. Each cached day gets the final series (`fair.parquet`) and is reduced to ŵ and shrink sums: `w_cells`, `abs_gaps` (float32), and per-day QR factors (`shrink_part` / `shrink_pooled`).
+  - **The EWMA anchor carries across midnight** in the final series through a 1-hour warm-up from the previous day.
+  - **Markouts `build_fair_oos` uses `walk_forward`.** For sim `fair_seconds`, the strategy session gets a ~10-line switch (side-session note); `src/polymm/sim/` is not edited here.
+  - **Per-day memory hot spots removed:**
+    - `book_grid` reduces the replayed top of book to the last update per (token, ⌈ts⌉ second), one hour folder at a time. It used to load all 40–65 M updates of a day.
+    - `apply_stoikov` and `ladder_monotone` join only their key columns instead of copying the whole day.
+    - Build-only columns are dropped after `candidates`.
+    - `fair.parquet` is written with `sink_parquet`.
+- **Why:** `polymm fair` was killed (out of memory) in the 11-11 refresh. It held every day's full grid and copied it 3–4 times: peak footprint 26.6 GB at 4 days, 30.0 GB at 5. Markouts (15.1 GB) and sim (14.1 GB) were growing ~3 GB a day toward the same wall around 11-15/16.
+- **Measured after (5 days, 11-06…11-10, peak footprint `/usr/bin/time -l`):**
+
+  | job | before | after | time after |
+  |---|---|---|---|
+  | `polymm fair` | 30.0 GB (killed) | 6.9 GB | 158 s |
+  | markouts `fair_oos` | 15.1 GB | 5.1 GB | 113 s |
+  | sim `fair_seconds` (switch) | 14.1 GB | 5.2 GB | 88 s |
+
+  - **Memory no longer grows with the number of days.** The peak is set by the largest day (2.6 M rows); only the fit store grows, by ~25–100 MB a day.
+  - **The biggest day alone** (11-10) peaked at 4.5 GB end to end, against 5.2 GB inside `book_grid` alone before the top-of-book reduction (11-06, a smaller day). `polymm fair` sits higher (6.9 GB) because pass 2 rereads and re-applies the biggest days; the next levers are category ids for the long text ids or building the grid per family.
+- **Same results:**
+  - Markouts `fair_oos` and sim `fair_sec` are equal to this morning's old-code outputs on all 5 days: same rows, same nulls, values within 1e-15 (sums instead of means in the Stoikov table).
+  - The pooled score, ŵ, shrink and Stoikov pieces equal the all-at-once functions in new unit tests.
+  - On real data, the old formulas applied to the stacked rows match the new tables. Scores at most 3e-13 relative, calibration 1e-16, ŵ 4e-16 (median gap 5e-8 from float32), shrink check ~1e-12; the written `fair.parquet` equals a recomputation.
+  - The 1-hour EWMA warm-up differs from 6 hours of history by 0.0 on every ladder row of the first 2 hours of 11-07…11-10.
+  - Per-day Fed Σp = 1 uses each day's market count. The old code used the count over all days; it was 5 on every day here, so there is no difference.
+- **Rejected:**
+  - Capping the training window now. It is not needed yet: the fit store is ~0.3 GB at 5 days. It is the next knob when the store reaches GBs, around 1–2 months of data.
+  - Histogram medians: approximate.
+  - Running the fair chain on the laptop at all, long term: see `docs/ARCHITECTURE.md` (research server by 12-05).
+- **Ref:** `src/polymm/fair/walk.py`, `fair/run.py` (`run_fair`, `score_cells_day`, `calibration_cells`), `fair/score.py` (`score_cells`, `score_pooled`), `fair/blend.py` (`w_cells`, `abs_gaps`, `w_table_pooled`, `shrink_part`, `shrink_pooled`), `fair/models.py` (`stoikov_sums`, `stoikov_from_sums`, `fed_sums`, key-only joins), `fair/inputs.py` (`_tob_last_per_second`), `markouts/fair_oos.py`, `tests/test_fair.py` (3 new tests), `docs/ARCHITECTURE.md` §2; D-023 (fair value v1, walk-forward), D-024 (markouts fair_oos), D-032 (sim inputs)
+- **Status:** active. Sim `fair_seconds` switch by the strategy session, due 11-14.

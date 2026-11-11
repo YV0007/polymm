@@ -104,3 +104,64 @@ def shrink_check(df: pl.DataFrame, model: str, book: str, tau: int) -> dict:
     y = d[f"x_mid_f{tau}"].to_numpy()
     coef, *_ = np.linalg.lstsq(X, y, rcond=None)
     return {"alpha_model": float(coef[0]), "gamma_book": float(coef[1]), "sum": float(coef.sum()), "n": d.height}
+
+
+# ---- ŵ table and shrink check, one day at a time (D-035) ---------------------------------------
+# Same idea as score_cells/score_pooled: per day keep only what adds up across days.
+
+
+def w_cells(df: pl.DataFrame, model: str, book: str, tau: int, by: list[str]) -> pl.DataFrame:
+    """For `w_table` on one day: per (by, cluster) Σyz and Σz²; ŵ and its clustered SE are built
+    from these (`w_table_pooled`)."""
+    d = df.filter(pl.col(f"x_mid_f{tau}").is_not_null() & pl.col(model).is_finite() & pl.col(book).is_finite()) \
+        .with_columns((pl.col(f"x_mid_f{tau}") - pl.col(book)).alias("_y"), (pl.col(model) - pl.col(book)).alias("_z"))
+    return d.group_by(by + ["cluster"]).agg(pl.len().alias("n"), (pl.col("_y") * pl.col("_z")).sum().alias("syz"),
+                                             (pl.col("_z") ** 2).sum().alias("szz"))
+
+
+def abs_gaps(df: pl.DataFrame, model: str, book: str, keys: list[str], taus) -> pl.DataFrame:
+    """For `w_table`'s median gap on one day: every |model − book| as float32, its regime keys as
+    categories, and one flag per τ saying whether that row is in τ's sample.
+    Why keep the values: a median does not add up across days, and a histogram would make it
+    approximate. Why one frame for all τ and groupings, compact: the first version kept 12 copies
+    with text keys (~0.4 GB a day, and growing); this is ~10 MB a day. float32 moves the median
+    by < 1e-7 (relative)."""
+    ok = pl.col(model).is_finite() & pl.col(book).is_finite()
+    return df.filter(ok).select([pl.col(k).cast(pl.Categorical) for k in keys]
+                                + [(pl.col(model) - pl.col(book)).abs().cast(pl.Float32).alias("absz")]
+                                + [pl.col(f"x_mid_f{k}").is_not_null().alias(f"ok_{k}") for k in taus])
+
+
+def w_table_pooled(cells: pl.DataFrame, gaps: pl.DataFrame, by: list[str], tau: int) -> pl.DataFrame:
+    """`w_table` rebuilt from stacked `w_cells` and `abs_gaps` of several days."""
+    cells = cells.group_by(by + ["cluster"]).agg(pl.col("n").sum(), pl.col("syz").sum(), pl.col("szz").sum())  # a cluster seen on 2 days counts once
+    t = cells.group_by(by).agg((pl.col("syz").sum() / pl.col("szz").sum()).alias("w_hat"), pl.col("n").sum().cast(pl.UInt32),
+                               pl.len().cast(pl.UInt32).alias("n_clusters"))
+    med = (gaps.filter(pl.col(f"ok_{tau}")).group_by(by).agg(pl.col("absz").median().cast(pl.Float64).alias("median_abs_gap"))
+           .with_columns([pl.col(b).cast(t.schema[b]) for b in by]))
+    t = t.join(med, on=by, nulls_equal=True)
+    # per cluster u = Σ z(y − ŵz) = Σyz − ŵ Σz²; SE = √Σu² / Σz²
+    se = cells.join(t.select(by + ["w_hat"]), on=by, nulls_equal=True).group_by(by).agg(
+        ((pl.col("syz") - pl.col("w_hat") * pl.col("szz")) ** 2).sum().sqrt().truediv(pl.col("szz").sum()).alias("w_se"))
+    return t.join(se, on=by, nulls_equal=True).sort(by)
+
+
+def shrink_part(df: pl.DataFrame, model: str, book: str, tau: int) -> tuple[int, np.ndarray | None]:
+    """For `shrink_check` on one day: the row count and the 3×3 R of a QR of [x_model, x_book, y].
+    Why QR and not ΣX'X: the two regressors are nearly collinear, and X'X squares that problem;
+    stacking per-day R factors and taking one more QR gives the least-squares fit of all rows
+    with lstsq's accuracy ("tall-skinny QR")."""
+    d = df.filter(pl.col(f"x_mid_f{tau}").is_not_null() & pl.col(model).is_finite() & pl.col(book).is_finite())
+    if not d.height:
+        return 0, None
+    A = np.column_stack([d[model].to_numpy(), d[book].to_numpy(), d[f"x_mid_f{tau}"].to_numpy()])
+    return d.height, np.linalg.qr(A, mode="r")
+
+
+def shrink_pooled(parts: list[tuple[int, np.ndarray | None]]) -> dict:
+    n = sum(p[0] for p in parts)
+    if n < 100:
+        return {}
+    R = np.linalg.qr(np.vstack([p[1] for p in parts if p[1] is not None]), mode="r")
+    coef = np.linalg.solve(R[:2, :2], R[:2, 2])
+    return {"alpha_model": float(coef[0]), "gamma_book": float(coef[1]), "sum": float(coef.sum()), "n": n}

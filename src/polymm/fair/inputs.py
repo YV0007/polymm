@@ -133,6 +133,33 @@ def spot_grid(date: str, spot_root: Path, latency_ms: float, pre_s: int = 1200) 
 # ---- book grid ------------------------------------------------------------------------------
 
 
+def _tob_last_per_second(day_dir: Path, assets: list[str]) -> pl.DataFrame:
+    """The replayed top of book, reduced to the last valid update per (token, second in which it
+    becomes visible on the 1 s grid, ⌈ts⌉).
+
+    Why (D-035): a day has 40–65 M updates, 4–8 GB in memory with the token id as text (11-06
+    alone peaked at 5.2 GB here), but the as-of join in `book_grid` only ever picks the LAST
+    update at or before each whole second, so every other update is dead weight. Why one hour
+    folder at a time: then only one hour of raw updates (~2–3 M rows) is ever in memory.
+    Exact: the latest update ≤ t is the latest of its ⌈ts⌉ bucket, and keeping each folder's
+    own latest per bucket keeps it (a bucket split across two folders just keeps two rows)."""
+    cols = ["tob_ts", "bid", "ask", "bid_sz", "ask_sz", "mid", "micro", "spread"]
+    folders = sorted({p.parent for p in (day_dir / "replay" / "derived" / "tob").rglob("*.parquet")})
+    parts = []
+    for f in folders:
+        parts.append(
+            pl.scan_parquet(str(f / "*.parquet"))
+            .filter(pl.col("asset_id").is_in(assets) & pl.col("valid") & (pl.col("event_type") != "reconnect"))
+            .select(pl.col("ts_recv_ns").alias("tob_ts"), "asset_id", pl.col("best_bid").alias("bid"), pl.col("best_ask").alias("ask"),
+                    pl.col("bid_size").alias("bid_sz"), pl.col("ask_size").alias("ask_sz"), "mid", pl.col("microprice").alias("micro"), "spread")
+            .group_by("asset_id", ((pl.col("tob_ts") + NS - 1) // NS).alias("_s"))
+            .agg([pl.col(c).get(pl.col("tob_ts").arg_max()) for c in cols])  # arg_max: the latest update of the bucket
+            .drop("_s").collect())
+    if not parts:
+        return pl.DataFrame(schema={"tob_ts": pl.Int64, "asset_id": pl.String, **{c: pl.Float64 for c in cols[1:]}})
+    return pl.concat(parts).sort("tob_ts")
+
+
 def book_grid(day_dir: Path, date: str, assets: list[str]) -> pl.DataFrame:
     """Per YES token: one row per second inside its strict clean windows, with the last
     valid top of book at or before that second, and the future mids for scoring."""
@@ -149,11 +176,7 @@ def book_grid(day_dir: Path, date: str, assets: list[str]) -> pl.DataFrame:
         return pl.DataFrame()
     g = (sw.select("wid", "asset_id", pl.int_ranges("s_a", pl.col("s_b") + 1).alias("sec")).explode("sec")
          .with_columns((pl.col("sec") * NS).alias("t")).sort("t"))
-    tob = (pl.scan_parquet(str(day_dir / "replay" / "derived" / "tob" / "**" / "*.parquet"))
-           .filter(pl.col("asset_id").is_in(assets) & pl.col("valid") & (pl.col("event_type") != "reconnect"))
-           .select(pl.col("ts_recv_ns").alias("tob_ts"), "asset_id", pl.col("best_bid").alias("bid"), pl.col("best_ask").alias("ask"),
-                   pl.col("bid_size").alias("bid_sz"), pl.col("ask_size").alias("ask_sz"), "mid", pl.col("microprice").alias("micro"), "spread")
-           .collect().sort("tob_ts"))
+    tob = _tob_last_per_second(day_dir, assets)
     g = g.join_asof(tob, left_on="t", right_on="tob_ts", by="asset_id", strategy="backward")
     g = g.filter(pl.col("mid").is_not_null()).sort("wid", "sec")
     # future mids inside the same window. Why a join, not a shift: seconds with a one-sided

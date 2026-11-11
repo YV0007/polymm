@@ -158,3 +158,61 @@ def test_w_fit_stays_finite_on_tiny_degenerate_data():
                        "f1": np.linspace(-1, 1, 200), "cluster": ["c"] * 200})
     beta = fit_w_smooth(df, "x_model", "x_micro", 30, ["f1"])
     assert np.all(np.isfinite(beta)) and np.all(np.abs(beta) < 50)
+
+
+# ---- one day at a time (D-035): pooled per-day pieces must equal the all-days-at-once numbers ----
+
+
+def _two_days():
+    """A random-walk frame with a biased, partly informative candidate, split into two 'days' by
+    cluster (clusters never span days in the real data either)."""
+    df = _walk(n_clusters=40, n=200).with_columns(
+        (pl.col("x_mid") + 0.35 + 0.5 * (pl.col("x_mid_f5") - pl.col("x_mid"))
+         + pl.Series(RNG.normal(0, 0.05, 8000))).alias("x_c"),
+        pl.lit("btc_15m").alias("family"),
+        pl.when(pl.col("sec") < 100).then(pl.lit("early")).otherwise(pl.lit("late")).alias("min_b"),
+        pl.Series(RNG.choice([0.0, 1.0, np.nan], 8000)).fill_nan(None).alias("outcome"),
+    )
+    day = pl.col("cluster").str.slice(1).cast(pl.Int32) % 2
+    return df, df.filter(day == 0), df.filter(day == 1)
+
+
+def test_score_pooled_equals_score_on_all_days():
+    from polymm.fair.score import score_cells, score_pooled
+    df, a, b = _two_days()
+    cells = pl.concat([score_cells(a, "x_c", ["family", "min_b"]), score_cells(b, "x_c", ["family", "min_b"])])
+    for by in (["family"], ["family", "min_b"]):
+        old, new = score(df, "x_c", by=by), score_pooled(cells, by)
+        assert old.columns == new.columns and old.height == new.height
+        for c in old.columns:
+            if old[c].dtype.is_float():
+                assert np.allclose(old[c].to_numpy(), new[c].to_numpy(), rtol=1e-9, atol=1e-12), c
+            else:
+                assert old[c].to_list() == new[c].to_list(), c
+
+
+def test_w_table_and_shrink_pooled_equal_all_days():
+    from polymm.fair.blend import abs_gaps, shrink_check, shrink_part, shrink_pooled, w_cells, w_table_pooled
+    df, a, b = _two_days()
+    old = w_table(df, "x_c", "x_mid", 30, ["family", "min_b"])
+    by = ["family", "min_b"]
+    cells = pl.concat([w_cells(x, "x_c", "x_mid", 30, by) for x in (a, b)])
+    gaps = pl.concat([abs_gaps(x, "x_c", "x_mid", by, (5, 30)) for x in (a, b)])
+    new = w_table_pooled(cells, gaps, by, 30)
+    for c in ("w_hat", "w_se", "median_abs_gap"):
+        assert np.allclose(old[c].to_numpy(), new[c].to_numpy(), rtol=1e-6), c
+    assert old["n"].to_list() == new["n"].to_list() and old["n_clusters"].to_list() == new["n_clusters"].to_list()
+    s_old = shrink_check(df, "x_c", "x_mid", 30)
+    s_new = shrink_pooled([shrink_part(x, "x_c", "x_mid", 30) for x in (a, b)])
+    assert s_old["n"] == s_new["n"] and s_old["alpha_model"] == pytest.approx(s_new["alpha_model"], rel=1e-9)
+    assert s_old["gamma_book"] == pytest.approx(s_new["gamma_book"], rel=1e-9)
+
+
+def test_stoikov_from_sums_equals_one_fit():
+    from polymm.fair.models import fit_stoikov, stoikov_from_sums, stoikov_sums
+    df, a, b = _two_days()
+    df, a, b = (x.with_columns(pl.lit(1, pl.Int8).alias("spr_b"), (pl.col("sec") % 10).cast(pl.Int8).alias("imb_b")) for x in (df, a, b))
+    old = fit_stoikov(df).sort("imb_b")
+    new = stoikov_from_sums(pl.concat([stoikov_sums(a), stoikov_sums(b)])).sort("imb_b")
+    assert old["n"].to_list() == new["n"].to_list()
+    assert np.allclose(old["adj"].to_numpy(), new["adj"].to_numpy(), rtol=1e-12)

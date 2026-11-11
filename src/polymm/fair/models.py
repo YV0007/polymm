@@ -72,15 +72,32 @@ def fit_stoikov(train: pl.DataFrame, h: int = 5, n0: float = 200.0) -> pl.DataFr
     """Mean next-h-seconds log-odds mid move per (family, spread bucket, imbalance bucket).
     Why shrink by n/(n+n0): a bucket seen 30 times should not move the fair value as much
     as one seen 30,000 times."""
-    return (train.filter(pl.col(f"x_mid_f{h}").is_not_null())
+    return stoikov_from_sums(stoikov_sums(train, h), n0)
+
+
+def stoikov_sums(g: pl.DataFrame, h: int = 5) -> pl.DataFrame:
+    """Per bucket: the SUM of next-h-second moves and the COUNT (one small table per day).
+    Why sums, not the mean: sums and counts of several days simply add up, so the table for
+    days 1..k is built from k tiny per-day tables instead of keeping every day's rows (D-035)."""
+    return (g.filter(pl.col(f"x_mid_f{h}").is_not_null())
             .group_by("family", "spr_b", "imb_b")
-            .agg((pl.col(f"x_mid_f{h}") - pl.col("x_mid")).mean().alias("adj_raw"), pl.len().alias("n"))
-            .with_columns((pl.col("adj_raw") * pl.col("n") / (pl.col("n") + n0)).alias("adj")))
+            .agg((pl.col(f"x_mid_f{h}") - pl.col("x_mid")).sum().alias("s"), pl.len().alias("n")))
+
+
+def stoikov_from_sums(sums: pl.DataFrame, n0: float = 200.0) -> pl.DataFrame:
+    """Pool per-day `stoikov_sums` (any number of days stacked) into the shrunk table."""
+    t = sums.group_by("family", "spr_b", "imb_b").agg(pl.col("s").sum(), pl.col("n").sum().cast(pl.UInt32))
+    return t.select("family", "spr_b", "imb_b", (pl.col("s") / pl.col("n")).alias("adj_raw"), "n") \
+        .with_columns((pl.col("adj_raw") * pl.col("n") / (pl.col("n") + n0)).alias("adj"))
 
 
 def apply_stoikov(g: pl.DataFrame, table: pl.DataFrame) -> pl.DataFrame:
-    return (g.join(table.select("family", "spr_b", "imb_b", "adj"), on=["family", "spr_b", "imb_b"], how="left")
-            .with_columns((pl.col("x_mid") + pl.col("adj").fill_null(0.0)).alias("x_stoikov")).drop("adj"))
+    # Why join only the key columns and attach the result (D-035): a join rebuilds EVERY column
+    # of the left frame (a full copy of a 1–2 GB day); joining the 3 keys copies 3 columns, and
+    # with_columns shares the untouched ones. maintain_order="left" keeps rows aligned with g.
+    k = ["family", "spr_b", "imb_b"]
+    adj = g.select(k).join(table.select(*k, "adj"), on=k, how="left", maintain_order="left")["adj"]
+    return g.with_columns((pl.col("x_mid") + adj.fill_null(0.0)).alias("x_stoikov"))
 
 
 # ---- F3/F4: BTC digital ---------------------------------------------------------------------------
@@ -178,8 +195,9 @@ def ladder_monotone(g: pl.DataFrame, col: str, out: str) -> tuple[pl.DataFrame, 
         if np.any(np.diff(seg) > 0):
             fixed[a:b] = pav_decreasing(seg)
     L = L.with_columns(logit(pl.Series(fixed)).alias(out))
-    g = g.join(L.select("asset_id", "sec", out), on=["asset_id", "sec"], how="left") \
-        .with_columns(pl.coalesce(pl.col(out), pl.col(col)).alias(out))
+    # Why a key-only join: see apply_stoikov (a full join copies the whole day)
+    m = g.select("asset_id", "sec").join(L.select("asset_id", "sec", out), on=["asset_id", "sec"], how="left", maintain_order="left")[out]
+    g = g.with_columns(m).with_columns(pl.coalesce(pl.col(out), pl.col(col)).alias(out))
     return g, {"groups": len(starts), "groups_violating_0.5c": viol}
 
 
@@ -189,20 +207,32 @@ def ladder_monotone(g: pl.DataFrame, col: str, out: str) -> tuple[pl.DataFrame, 
 def add_fed(g: pl.DataFrame) -> tuple[pl.DataFrame, dict]:
     """Rescale the Fed microprices to sum to 1, only at seconds where all outcomes are in a
     clean window (a partial sum would be meaningless)."""
-    F = g.filter(pl.col("family") == "fed_dec_2026")
-    if not F.height:
+    n_mk, full, n_sec = fed_sums(g)
+    if not n_mk:
         return g.with_columns(pl.lit(None, pl.Float64).alias("x_fed")), {}
-    n_mk = F["condition_id"].n_unique()
-    s = F.group_by("sec").agg(pl.col("micro").sum().alias("_sum"), pl.len().alias("_n"))
-    full = s.filter(pl.col("_n") == n_mk)
     g = g.join(full.select("sec", "_sum"), on="sec", how="left").with_columns(
         pl.when(pl.col("family") == "fed_dec_2026").then(logit(pl.col("micro") / pl.col("_sum"))).otherwise(None).alias("x_fed")
     ).drop("_sum")
-    stats = {"markets": n_mk, "seconds_complete": full.height, "seconds_total": s.height,
-             "sum_mean": float(full["_sum"].mean()) if full.height else None,
-             "sum_p01": float(full["_sum"].quantile(0.01)) if full.height else None,
-             "sum_p99": float(full["_sum"].quantile(0.99)) if full.height else None}
-    return g, stats
+    return g, fed_stats(n_mk, full, n_sec)
+
+
+def fed_sums(g: pl.DataFrame) -> tuple[int, pl.DataFrame, int]:
+    """(number of Fed markets, Σ microprice per second where all of them are present, seconds seen)."""
+    F = g.filter(pl.col("family") == "fed_dec_2026")
+    if not F.height:
+        return 0, pl.DataFrame(schema={"sec": pl.Int64, "_sum": pl.Float64}), 0
+    n_mk = F["condition_id"].n_unique()
+    s = F.group_by("sec").agg(pl.col("micro").sum().alias("_sum"), pl.len().alias("_n"))
+    return n_mk, s.filter(pl.col("_n") == n_mk).select("sec", "_sum"), s.height
+
+
+def fed_stats(n_mk: int, full: pl.DataFrame, n_sec: int) -> dict:
+    """Summary of the Fed sums. Takes the per-second sums (not the stats) so several days can be
+    stacked first: a 1 % quantile of two days is not any average of the two days' quantiles."""
+    return {"markets": n_mk, "seconds_complete": full.height, "seconds_total": n_sec,
+            "sum_mean": float(full["_sum"].mean()) if full.height else None,
+            "sum_p01": float(full["_sum"].quantile(0.01)) if full.height else None,
+            "sum_p99": float(full["_sum"].quantile(0.99)) if full.height else None}
 
 
 def p_of(x: pl.Expr) -> pl.Expr:
