@@ -377,3 +377,31 @@ Template:
   - Running the fair chain on the laptop at all, long term: see `docs/ARCHITECTURE.md` (research server by 12-05).
 - **Ref:** `src/polymm/fair/walk.py`, `fair/run.py` (`run_fair`, `score_cells_day`, `calibration_cells`), `fair/score.py` (`score_cells`, `score_pooled`), `fair/blend.py` (`w_cells`, `abs_gaps`, `w_table_pooled`, `shrink_part`, `shrink_pooled`), `fair/models.py` (`stoikov_sums`, `stoikov_from_sums`, `fed_sums`, key-only joins), `fair/inputs.py` (`_tob_last_per_second`), `markouts/fair_oos.py`, `tests/test_fair.py` (3 new tests), `docs/ARCHITECTURE.md` §2; D-023 (fair value v1, walk-forward), D-024 (markouts fair_oos), D-032 (sim inputs)
 - **Status:** active. Sim `fair_seconds` switch by the strategy session, due 11-14.
+
+### D-036 · 2026-11-12 · Stay on BTC 15m and improve rung 3, starting with the quoting fair value; more markets wait for cloud storage
+- **Decision:**
+  - **Focus:** BTC 15m, with rung 3 as the base. It is the closest to break-even (−0.57 ± 0.79 USD per window on the test days) and needs only ~25 % of the fair-value-1 s-earlier oracle (+2.24) to turn positive; rung 1 needs 57 % of its +8.0.
+  - **First step, the quoting fair value (lever 1a):**
+    - update the book part on every book event instead of the 1 s grid;
+    - fit a separate weight on BTC **changes** for the 0.25–1 s horizon, against the next book move (today's w is fitted on levels at 30 s);
+    - rerun the oracles and the race; add oracle leads of 250 / 500 ms and a noisy oracle, to get P&L as a function of next-second R² and the break-even R²;
+    - includes the sim `fair_seconds` switch to `walk_forward` (D-035).
+  - **Then:** cheap rung-3 rules (no price-improving orders, stand aside when the book is 2 ¢ or wider, cancels before new orders), the cancel-latency sweep (`cx_lat_ms` 0 / 25 / 50 / 75 ms), then faster BTC sources (lever 1b: Binance perpetual futures, Coinbase, Chainlink; lead–lag study).
+  - **More markets wait** until cloud storage and the research server exist (`docs/ARCHITECTURE.md`; set-up planned for the evening of 11-12): recording them is too much volume for the laptop and the VPS. When it starts:
+    - per-market-type tests: lead–lag against the driver where one exists (crypto), markouts around events (sports goals, weather model runs, news);
+    - the common screen: baseline maker net, markout signature, takers ahead of the driver, jumps per tick, rewards per capital, plus **participant mix** from trade wallets (maker concentration, taker toxicity by wallet; Data API wallet field to verify);
+    - ETH / SOL 15m only as a transfer test of the BTC model.
+  - **Other venues parked:** access from Austria is checked first; cross-venue prices may later serve as a fair-value source.
+  - **Checkpoint and kill rule:** proposed, to be fixed by Yehor before the 1b results: continue BTC 15m only if rung 3 is positive on the lockbox days with a sane Sharpe after 1a and 1b; otherwise move to the market screen.
+- **Why:**
+  - D-034 puts 80 % of rung 1's loss (165 % of rung 3's net loss) on fills swept through while our fair value said the quote was fine.
+  - Found 11-12: the simulator's fair value is the Polymarket book sampled once a second plus ~8 % of each BTC move (w median 0.078, 5–95 % 0.04–0.27; fitted on levels at 30 s, pulled toward 0 by the model's persistent level error). The mid moves 0.71 ¢ in the same second and 0.98 ¢ by the next per 1 ¢ model move. Part of "takers ~1 s ahead" may be our own lateness, so 1a is the cheapest test that can reorder every lever.
+  - No crypto Up/Down market (any coin, any window) has a liquidity reward pool in the 11-12 snapshot (11,384 paying markets; crypto coin markets pay ~5 USD/day each, long-dated price levels), so other coins add no rewards.
+  - Learning goal (D-005): build one market end to end before breadth.
+- **Rejected:**
+  - screening many markets now: data volume, and judging them before the tools are understood;
+  - ETH / SOL 15m for rewards: none exist;
+  - other venues now: access and per-venue infrastructure;
+  - spending on latency or colocation before 1a: the speed oracles are zero or negative.
+- **Ref:** `research/strategy_diagnosis.md`, Notion "Strategy breakdown — where we lose (BTC 15m, rung 1 & rung 3)", `docs/ARCHITECTURE.md`; D-005, D-023, D-029, D-032, D-034, D-035
+- **Status:** active. Next: lever 1a.
