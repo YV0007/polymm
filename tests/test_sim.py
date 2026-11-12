@@ -133,3 +133,75 @@ def test_queue_front_oracle_fills_first():
     # first in line: the first taker's 4 shares reach us at once, the second's 8 complete the 5
     out = _run(EL, [], BK, FR, ORDER, model="pess", front=True)
     assert out["fill_qty"] == 5.0 and out["fills"][0] == 2 * S
+
+
+# ---- D-038: one decision per instant, the event-driven fair stream, m strictly before the taker ----
+def test_one_decision_per_instant():
+    # t = 1 s: the book moves to 0.52 / 0.54 AND the fair value ticks to 0.53 with the same stamp.
+    # Deciding after the book update alone (fair still 0.51) wanted an ask at 0.52, clamped to 0.53,
+    # and the rate limiter then blocked the right ask (0.54) for 20 ms. One decision on the final
+    # state sends exactly bid 0.52 / ask 0.54.
+    bk = [(0, 500, 520), (1 * S, 520, 540)]
+    fr = [(0, 0.51), (1 * S, 0.53)]
+    out = _run([], [], bk, fr, rung=1, prm=E.params(h=1.0, hyst=0.0), t1=3 * S)
+    assert sorted(out["o_pk"].tolist()) == [500, 520, 520, 540]
+
+
+def _logit(p):
+    return float(np.log(p / (1 - p)))
+
+
+def test_event_fair_reproduces_grid_and_moves_with_book_and_btc():
+    from polymm.sim.inputs import _phi_x, fair_ticks
+
+    w, off, sig, K = 0.1, 0.1, 0.001, 100.0
+    adj = {(2, 5): 0.0, (2, 7): 0.02}
+    st = pl.DataFrame({"family": ["btc_15m"] * 2, "spr_b": [2, 2], "imb_b": [5, 7], "adj": [0.0, 0.02]})
+
+    def xmodel(S_t, tau):
+        return float(_phi_x(np.array([np.log(S_t / K) / (sig * np.sqrt(tau - 40.0))]))[0])
+
+    # grid second 100: book 0.49/0.51 (10/10) → x_stoikov 0; S = 100 → x_model 0; second 101: the
+    # 100.9 s update (0.51/0.53, 30/10) and the 100.6 s Binance mid 100.5 are the last known
+    xs0, xm0 = 0.0, xmodel(100.0, 600.0)
+    xs1, xm1 = _logit(0.52) + 0.02, xmodel(100.5, 599.0)
+    fs = pl.DataFrame({"family": ["btc_15m"] * 2, "asset_id": ["y"] * 2, "sec": [100, 101], "w_x_fair": [w] * 2,
+                       "x_model": [xm0, xm1], "x_anch": [xm0 + off, xm1 + off], "x_stoikov": [xs0, xs1], "K": [K] * 2, "basis0": [0.0] * 2,
+                       "sigma_s": [sig] * 2, "tau": [600.0, 599.0], "A_known": [None, None], "v2": [0.0] * 2, "S": [100.0, 100.5]})
+    fs = fs.with_columns((pl.col("x_stoikov") + w * (pl.col("x_anch") - pl.col("x_stoikov"))).alias("x_fair")).with_columns(
+        (1 / (1 + (-pl.col("x_fair")).exp())).alias("p_fair"))
+    tob = pl.DataFrame({"yes": ["y"] * 3, "t": [int(99.5 * S), int(100.3 * S), int(100.9 * S)], "bid": [0.49, 0.49, 0.51], "ask": [0.51, 0.51, 0.53],
+                        "bid_sz": [10.0, 30.0, 30.0], "ask_sz": [10.0] * 3})
+    spot = pl.DataFrame({"t": [int(100.6 * S)], "S_t": [100.5]})
+    info = {}
+    tk = fair_ticks(fs, spot, tob, st, mode="event", info=info)
+    assert info["fair_grid_reproduced_max_abs_err"] < 1e-12 and info["fair_grid_reproduced_rows"] == 2
+    sig_ = lambda x: 1 / (1 + np.exp(-x))
+    got = dict(zip(tk["t"].to_list(), tk["p"].to_list()))
+    # 100.3 s: the imbalance bucket moves the book part by +0.02 (×(1 − w)); 100.6 s: BTC moves the
+    # model part (× w), with τ still the second's own 600 s; 100.9 s: the mid moves to 0.52
+    xm1_k = xmodel(100.5, 600.0)
+    exp = {int(100.3 * S): sig_(0.02 + w * (xm0 + off - 0.02)), int(100.6 * S): sig_(0.02 + w * (xm1_k + off - 0.02)),
+           int(100.9 * S): sig_(xs1 + w * (xm1_k + off - xs1)), 100 * S: sig_(xs0 + w * (xm0 + off - xs0)),
+           101 * S: sig_(xs1 + w * (xm1 + off - xs1))}
+    for t, p in exp.items():
+        assert abs(got[t] - p) < 1e-12, (t, got[t], p)
+    assert abs(got[101 * S] - got[int(100.9 * S)]) < 1e-4  # only τ moved from 600 to 599 s in between
+    # "sec" mode: only the Binance tick, on the frozen second-100 book
+    tk2 = fair_ticks(fs, spot, tob, st, mode="sec")
+    assert tk2.filter(pl.col("t") % S != 0)["t"].to_list() == [int(100.6 * S)]
+    assert abs(tk2.filter(pl.col("t") == int(100.6 * S))["p"][0] - sig_(xs0 + w * (xm0 + off - xs0) + w * (xm1_k - xm0))) < 1e-12
+    # BTC known 300 ms earlier: the Binance tick lands at 100.3 s, merged with the book tick there
+    tk3 = fair_ticks(fs, spot, tob, st, mode="event", btc_lead_ms=300.0)
+    assert int(100.6 * S) not in tk3["t"].to_list()
+    assert abs(tk3.filter(pl.col("t") == int(100.3 * S))["p"][0] - sig_(0.02 + w * (xm1_k + off - 0.02))) < 1e-12
+
+
+def test_attribution_marks_just_before_the_taker_order():
+    f = pl.DataFrame({"t": [10 * S], "t_pre": [10 * S], "s": [1], "pk": [500], "qty": [5.0], "through": [False], "x_arr": [0.0], "typ": [1],
+                      "oid": [0], "inv": [5.0], "yes": ["y"], "condition_id": ["c"], "seg": [0]})
+    fair = pl.DataFrame({"yes": ["y"] * 3, "t": [0, 10 * S, 70 * S], "p": [0.51, 0.60, 0.60]})
+    seg = pl.DataFrame({"yes": ["y"], "t_end_s": [100], "outcome": [1]})
+    a = A.attribute(f, fair, seg, 0.0)
+    assert abs(a["m"][0] - 0.51) < 1e-12  # the 0.60 tick stamped at the order's start is after the information
+    assert A.identity_error(a) < 1e-12

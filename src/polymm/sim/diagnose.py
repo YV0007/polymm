@@ -46,7 +46,7 @@ from ..markouts.fills import fee_table, market_index
 from . import attrib as A
 from . import day as Dy
 from . import experiments as X
-from .inputs import NS, PK, load_sim_day, rebate_k
+from .inputs import NS, PK, load_sim_day, rebate_k, refair
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +62,13 @@ ORACLES = {
     "front": {"queue_front": True},
     "colo": {"lat_ms": 0.0, "fair_lead_ms": 127.0},
     "all": {"lat_ms": 0.0, "fair_lead_ms": 1000.0, "queue_front": True},
+    # D-038: only the BTC input is known earlier; the book stays at its true time. Why a separate
+    # oracle: fair_lead shifts the whole stream, book-driven ticks included, so it also "knows"
+    # the next second of order flow; btc_lead is the ceiling for a faster or better BTC signal alone
+    "btc_lead_127ms": {"btc_lead_ms": 127.0},
+    "btc_lead_250ms": {"btc_lead_ms": 250.0},
+    "btc_lead_500ms": {"btc_lead_ms": 500.0},
+    "btc_lead_1s": {"btc_lead_ms": 1000.0},
 }
 TAUS_MS = (0, 100, 250, 500, 1000, 2000, 5000, 10000, 30000, 60000)
 # Exploratory (chosen after seeing minute 13–14 carry half of rung 1's loss, so NOT walk-forward):
@@ -318,7 +325,9 @@ def run(sim_root: Path = Path("reports/sim"), out: Path = Path("reports/sim_diag
     data_dirs = data_dirs or [Path("data_vps"), Path("data")]
     out.mkdir(parents=True, exist_ok=True)
     params = json.loads((sim_root / "sim_params.json").read_text())
-    sim_dates = json.loads((sim_root / "sim.json").read_text())["dates"]
+    sim_res = json.loads((sim_root / "sim.json").read_text())
+    sim_dates = sim_res["dates"]
+    fair_mode = sim_res.get("fair_mode", "sec")
     sel = pl.DataFrame(params["selected"]).filter(pl.col("rung").is_in(list(RUNGS)))
     days = sorted(sel["date"].unique().to_list())
     cf = {c["cfg"]: c for c in X.all_configs()}
@@ -326,8 +335,13 @@ def run(sim_root: Path = Path("reports/sim"), out: Path = Path("reports/sim_diag
     rk = rebate_k(fee_table(data_dirs))["btc_15m"]
     Fs, Ws, Os, Rs, MF, PF, EX = [], [], [], [], [], [], []
     for d in days:
-        S = load_sim_day(d, fair_root, data_dirs, spot_root, sim_root / d / "fair_sec.parquet", idx)
+        S = load_sim_day(d, fair_root, data_dirs, spot_root, sim_root / d / "fair_sec.parquet", idx, fair_mode=fair_mode)
         P = Dy.prepare(S, d)
+        # the BTC-lead oracles replay a different fair stream: prepare it once per lead
+        P_lead = {}
+        for kw in ORACLES.values():
+            if "btc_lead_ms" in kw and kw["btc_lead_ms"] not in P_lead:
+                P_lead[kw["btc_lead_ms"]] = Dy.prepare(S | {"fair": refair(S, fair_mode, kw["btc_lead_ms"])}, d)
         seed = sim_dates.index(d) if d in sim_dates else 0
         for r in RUNGS:
             row = sel.filter((pl.col("date") == d) & (pl.col("rung") == r))
@@ -336,7 +350,8 @@ def run(sim_root: Path = Path("reports/sim"), out: Path = Path("reports/sim_diag
             c = cf[row["cfg"][0]]
             for name, kw in ORACLES.items():
                 kw = {"lat_ms": X.LAT_BASE} | kw
-                R = Dy.run_day(P, r, X.prm_of(c), model=X.MODEL_BASE, seed=seed, **kw)
+                Pq = P_lead[kw.pop("btc_lead_ms")] if "btc_lead_ms" in kw else P
+                R = Dy.run_day(Pq, r, X.prm_of(c), model=X.MODEL_BASE, seed=seed, **kw)
                 a = A.attribute(R["fills"], S["fair"], R["segments"], rk)
                 w = A.per_window(a, R["segments"], X.SIZE)
                 Ws.append(w.with_columns(pl.lit(d).alias("date"), pl.lit(r).alias("rung"), pl.lit(name).alias("oracle"), pl.lit(row["fold"][0]).alias("fold")))
@@ -362,7 +377,7 @@ def run(sim_root: Path = Path("reports/sim"), out: Path = Path("reports/sim_diag
             Rs.append(rc.with_columns(pl.lit(d).alias("date")))
         MF.append({"date": d} | market_factors(S, rc))
         PF.append(predict_frame(d, sim_root / d / "fair_sec.parquet", S["trades"], S["tob"]))
-        del S, P
+        del S, P, P_lead
     F = pl.concat(Fs, how="diagonal_relaxed")
     W = pl.concat(Ws, how="diagonal_relaxed")
     O = pl.concat(Os, how="diagonal_relaxed")
@@ -389,7 +404,7 @@ def run(sim_root: Path = Path("reports/sim"), out: Path = Path("reports/sim_diag
     T["examples"] = examples(F)
     for k, v in T.items():
         v.write_parquet(out / f"table_{k}.parquet")
-    res = {"days": days, "rungs": list(RUNGS), "oracles": ORACLES, "selected": sel.to_dicts()}
+    res = {"days": days, "rungs": list(RUNGS), "oracles": ORACLES, "selected": sel.to_dicts(), "fair_mode": fair_mode}
     (out / "diagnose.json").write_text(json.dumps(res, indent=1, default=str))
     if plot_dir is not None:
         make_plots(T, plot_dir)

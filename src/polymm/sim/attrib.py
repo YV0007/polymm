@@ -1,7 +1,7 @@
 """S3: what each fill earned, split into the four terms, and per-window / per-day P&L.
 
-For fill i (side s, +1 = we bought YES; price P; q shares), fair value m at the start of the
-taker order that hit us (stage 4/5's rule: the instant the information arrived), m^τ the fair
+For fill i (side s, +1 = we bought YES; price P; q shares), fair value m just before the start
+of the taker order that hit us (stage 4/5's rule: the instant the information arrived), m^τ the fair
 value τ seconds after the fill, V the settlement value:
 
     ① spread      s (m − P) q          what we captured against fair value
@@ -36,7 +36,11 @@ def attribute(fills: pl.DataFrame, fair: pl.DataFrame, seg: pl.DataFrame, rebate
                        pl.col("outcome").is_null().alias("marked"),
                        (pl.col("t") + tau * NS).alias("t_tau")))
     fr = fair.select("yes", "t", "p").sort("t")
-    f = (f.sort("t_pre").join_asof(fr.rename({"t": "tp", "p": "m_pre"}), left_on="t_pre", right_on="tp", by="yes", strategy="backward")
+    # Why m at t_pre − 1 ns, strictly before the taker order: with a fair value that moves on every
+    # book update (D-038) the update caused by the taker's own first trade carries the same stamp
+    # as the order's start; the information we had is the value just before it
+    f = f.with_columns((pl.col("t_pre") - 1).alias("_tp1"))
+    f = (f.sort("_tp1").join_asof(fr.rename({"t": "tp", "p": "m_pre"}), left_on="_tp1", right_on="tp", by="yes", strategy="backward").drop("_tp1")
          .sort("t").join_asof(fr.rename({"t": "tf", "p": "m_fill"}), left_on="t", right_on="tf", by="yes", strategy="backward")
          .sort("t_tau").join_asof(fr.rename({"t": "tt", "p": "m_tau_raw"}), left_on="t_tau", right_on="tt", by="yes", strategy="backward"))
     past_end = pl.col("t_tau") >= pl.col("t_end_s") * NS

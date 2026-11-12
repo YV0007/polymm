@@ -36,6 +36,11 @@ Strategy ladder (rung r includes every rung below it):
                       price, else rest at r ∓ h; rungs 1–3 apply; rewards scored after the run
    -1  scripted       fixed orders (send time, side, price, size, cancel time): the stage-5 check
 Every rung keeps the inventory limit |q| ≤ qmax (a risk limit, not a strategy).
+
+One decision per instant (D-038): market events that share a receive timestamp (a book update and
+the fair-value tick it causes, the several level updates of one message) are all applied before
+the strategy runs once on the final state. Why: deciding after each of them sent an order on a
+half-updated state and the 20 ms rate limiter then blocked the correction.
 """
 from __future__ import annotations
 
@@ -55,6 +60,7 @@ DEFAULTS = {"h": 1.0, "size": 10.0, "req_ms": 2000.0, "gamma": 0.0, "qmax": 100.
             "jump_ms": 500.0, "hold_ms": 1000.0, "v_thr": 0.0, "gap_ms": 20.0, "hyst": 0.0}
 NAMES = ["h", "size", "req_ms", "gamma", "qmax", "end_s", "jump_c", "jump_ms", "hold_ms", "v_thr", "gap_ms", "hyst"]
 
+ENGINE_VERSION = 2  # bump when a change alters results on the same inputs (reuse of stored runs checks it)
 MODEL_ID = {"pess": 0, "prop": 1, "matched": 2, "opt": 3}
 SKEW_CAP = 0.05  # the inventory lean |r − m| never exceeds 5 ¢
 # order end codes
@@ -191,6 +197,7 @@ def run_segment(el_t, el_s, el_pk, el_cons, el_res, el_L, el_addt, el_tord,
     j_back = 0
     pull_b_until = np.int64(-1)
     pull_a_until = np.int64(-1)
+    pending = False  # a decision owed once the last market event of this instant is applied
     last_act_b = np.int64(0)  # Why 0, not -BIG: t − (−BIG) overflows int64
     last_act_a = np.int64(0)
     next_timer = t0
@@ -373,6 +380,18 @@ def run_segment(el_t, el_s, el_pk, el_cons, el_res, el_L, el_addt, el_tord,
                         live_a[o_pk[k]] -= 1
                     o_st[k] = 0
                     o_tcx[k] = BIG
+            # one decision per instant: more market events stamped t → apply them first
+            tb = bk_t[i_bk] if i_bk < n_bk else BIG
+            te = el_t[i_el] if i_el < n_el else BIG
+            tt = tr_t[i_tr] if i_tr < n_tr else BIG
+            tf = fr_t[i_fr] if i_fr < n_fr else BIG
+            if min(min(tb, te), min(tt, tf)) == t:
+                if decide:
+                    pending = True
+                continue
+            if pending:
+                decide = True
+                pending = False
         else:
             t = ti
             # arrivals first, then cancels landing at the same instant

@@ -42,13 +42,27 @@ class SimConfig:
     spot_root: Path = Path("data_vps")
     plot_dir: Path = Path("research/simulator")
     plots: bool = True
-    reuse: bool = False      # reuse pass-1 results of days whose grid file exists
+    reuse: bool = False      # reuse pass-1 results of days whose grid file exists (same fair mode and engine)
     fed: bool = True
+    fair_mode: str = "event"  # "event" (book touch + Binance ticks, D-038) or "sec" (book held per second)
+    rungs: tuple[int, ...] | None = None  # restrict the grid to these rungs (None = all)
 
 
 def _load(cfg: SimConfig, d: str, idx: pl.DataFrame, fs_paths: dict) -> tuple[dict, Dy.Prepared]:
-    S = load_sim_day(d, cfg.fair_root, cfg.data_dirs, cfg.spot_root, fs_paths[d], idx)
+    S = load_sim_day(d, cfg.fair_root, cfg.data_dirs, cfg.spot_root, fs_paths[d], idx, fair_mode=cfg.fair_mode)
     return S, Dy.prepare(S, d)
+
+
+def _tags(cfg: SimConfig) -> dict:
+    return {"fair_mode": cfg.fair_mode, "engine": E.ENGINE_VERSION}
+
+
+def _same_run(path: Path, cfg: SimConfig) -> bool:
+    """A stored day may be reused only if it was produced by the same fair stream and engine."""
+    if not path.exists():
+        return False
+    c = json.loads(path.read_text())
+    return all(c.get(k) == v for k, v in _tags(cfg).items())
 
 
 def _one(P: Dy.Prepared, S: dict, c: dict, rk: float, *, model: str, lat: float, seed: int, vt, vn, tag: dict,
@@ -64,7 +78,7 @@ def pass1(cfg: SimConfig, dates: list[str], idx, fs_paths, rk, configs) -> pl.Da
     Ws = []
     for i, d in enumerate(dates):
         p = cfg.out / d / "grid_windows.parquet"
-        if cfg.reuse and p.exists():
+        if cfg.reuse and p.exists() and _same_run(cfg.out / d / "checks.json", cfg):
             Ws.append(pl.read_parquet(p))
             continue
         t0 = time.perf_counter()
@@ -82,7 +96,7 @@ def pass1(cfg: SimConfig, dates: list[str], idx, fs_paths, rk, configs) -> pl.Da
         p.parent.mkdir(parents=True, exist_ok=True)
         W.write_parquet(p)
         chk |= {"identity_err_max": ie, "overflow_total": ovf, "configs": len(configs), "seconds": round(time.perf_counter() - t0, 1),
-                "vtab_cells": int((vn >= 200).sum()), "vtab_train": dates[:i] or [d]}
+                "vtab_cells": int((vn >= 200).sum()), "vtab_train": dates[:i] or [d]} | _tags(cfg)
         (cfg.out / d / "checks.json").write_text(json.dumps(chk, indent=1, default=str))
         log.info("pass 1 %s: %d settings in %.0f s", d, len(configs), time.perf_counter() - t0)
         Ws.append(W)
@@ -127,7 +141,7 @@ def pass2(cfg: SimConfig, dates: list[str], idx, fs_paths, rk, configs, sel: pl.
         bp, fp, cp = cfg.out / d / "band_windows.parquet", cfg.out / d / "fed_windows.parquet", cfg.out / d / "checks_pass2.json"
         # Why reuse is safe here: day k's selection uses only days < k, which never change once
         # recorded, so a stored band for the same selected settings is the same result
-        if cfg.reuse and bp.exists() and cp.exists():
+        if cfg.reuse and bp.exists() and _same_run(cp, cfg):
             old = pl.read_parquet(bp)
             want = set(zip(chosen["rung"].to_list(), chosen["cfg"].to_list(), chosen["fold"].to_list()))
             have = set(old.filter(pl.col("exp") == "band").select("rung", "cfg", "fold").unique().iter_rows())
@@ -157,14 +171,14 @@ def pass2(cfg: SimConfig, dates: list[str], idx, fs_paths, rk, configs, sel: pl.
                                 tag=tag | {"model": X.MODEL_BASE, "lat_ms": X.LAT_BASE, "exp": f"noise_{noise}"})
                     B.append(w)
         # do-nothing: inventory limit 0 → no order can ever be wanted
-        c1 = cf[chosen.filter(pl.col("rung") == 1)["cfg"][0]]
+        c1 = cf[(chosen.filter(pl.col("rung") == 1) if (chosen["rung"] == 1).any() else chosen)["cfg"][0]]
         w, _ = _one(P, S, c1, rk["btc_15m"], model=X.MODEL_BASE, lat=X.LAT_BASE, seed=i, vt=vt, vn=vn,
                     prm=E.params(size=X.SIZE, qmax=0.0), tag={"date": d, "cfg": "do_nothing", "rung": 1, "fold": "check",
                                                               "model": X.MODEL_BASE, "lat_ms": X.LAT_BASE, "exp": "do_nothing"})
         B.append(w)
         B = pl.concat(B, how="diagonal_relaxed")
         B.write_parquet(cfg.out / d / "band_windows.parquet")
-        checks[d] = {"do_nothing_fills": int(w["fills"].sum()), "do_nothing_pnl": float(w["pnl"].sum())}
+        checks[d] = {"do_nothing_fills": int(w["fills"].sum()), "do_nothing_pnl": float(w["pnl"].sum())} | _tags(cfg)
         if i == 1:
             checks[d]["stage5_reproduction"] = stage5_reproduction(P, d, cfg.queue_root)
         if cfg.fed:
@@ -273,7 +287,7 @@ def report(cfg: SimConfig, dates: list[str], configs: list[dict], W: pl.DataFram
     sane = (not viol) and all(v["noisy_not_better_2se"] for v in noise_ok.values()) and \
         all((c or {}).get("do_nothing_fills", 0) == 0 for c in checks.values())
     overall = "PASS" if sane and any(g["verdict"] == "PASS" for g in gate.values()) else "FAIL"
-    res = {"dates": dates, "test_days": tests, "lockbox": lock, "settings": len(configs),
+    res = {"dates": dates, "test_days": tests, "lockbox": lock, "settings": len(configs), "fair_mode": cfg.fair_mode, "engine": E.ENGINE_VERSION,
            "trials_logged": int(W.select("cfg", "date").unique().height), "size": X.SIZE, "lat_base_ms": X.LAT_BASE,
            "model_base": X.MODEL_BASE, "gate_b": overall, "gate_b_by_rung": gate, "dsr": dsr, "plateau": plat, "windows_needed": need,
            "delay_violations": viol, "noise_check": noise_ok, "sanity_ok": sane, "checks": checks}
@@ -322,7 +336,7 @@ def run_sim(cfg: SimConfig) -> dict:
     ref = pl.read_parquet(cfg.fair_root / "reference" / "markets_ref.parquet")
     idx = market_index(ref)
     rk = rebate_k(fee_table(cfg.data_dirs))
-    configs = X.all_configs()
+    configs = [c for c in X.all_configs() if cfg.rungs is None or c["rung"] in cfg.rungs]
     W = pass1(cfg, dates, idx, fs_paths, rk, configs)
     sel = X.select(W, dates)
     B, checks, fed = pass2(cfg, dates, idx, fs_paths, rk, configs, sel)
