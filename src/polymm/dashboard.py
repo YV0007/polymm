@@ -340,7 +340,7 @@ def sim_section(sim_root: Path) -> tuple[dict, dict, list[dict]]:
     data = {"sim_rungs": rungs, "sim_rungs_nogap": nogap, "sim_band": band, "sim_latency": lat, "sim_gate": gate, "sim_fed": fed}
     kp = {"sim_gate_b": R.get("gate_b"), "sim_best_rung": best.get("rung"), "sim_best_mean": best.get("mean"), "sim_best_se": best.get("se"),
           "sim_best_lockbox_mean": lb.get("mean"), "sim_lockbox": R.get("lockbox"), "sim_test_days": ", ".join(R.get("test_days") or []),
-          "sim_settings": R.get("settings"), "sim_lat_ms": R.get("lat_base_ms")}
+          "sim_settings": R.get("settings"), "sim_lat_ms": R.get("lat_base_ms"), "sim_fair_mode": R.get("fair_mode") or "sec", "sim_engine": R.get("engine") or 1}
     chk = []
     ch = R.get("checks") or {}
     for d, c in sorted(ch.items()):
@@ -350,8 +350,12 @@ def sim_section(sim_root: Path) -> tuple[dict, dict, list[dict]]:
                         "ok": (inp.get("identity_err_max") or 0) < 1e-9})
             chk.append({"area": "simulator", "check": f"{d}: fair value at whole seconds = stage 3/4 walk-forward series", "result": str(inp.get("fair_grid_max_abs_err")),
                         "ok": inp.get("fair_grid_max_abs_err") == 0.0})
-            te = inp.get("fair_tick_at_own_spot_max_abs_err")
-            chk.append({"area": "simulator", "check": f"{d}: tick formula at the second's own BTC price = that second's fair value", "result": str(te),
+            # Why two keys: since D-038 the event stream rebuilds every whole second from the book, the
+            # Stoikov table and the BTC model (`fair_grid_reproduced`); the old 1 s stream only checked
+            # the tick formula at the second's own BTC price. Either way the number must be ~0.
+            te = inp.get("fair_grid_reproduced_max_abs_err", inp.get("fair_tick_at_own_spot_max_abs_err"))
+            what = "whole seconds rebuilt from book + table + BTC model" if "fair_grid_reproduced_max_abs_err" in inp else "tick formula at the second's own BTC price"
+            chk.append({"area": "simulator", "check": f"{d}: {what} = that second's fair value", "result": str(te),
                         "ok": te is not None and te < 1e-6})
             chk.append({"area": "simulator", "check": f"{d}: no fills or order-log rows truncated", "result": str(inp.get("overflow_total")),
                         "ok": inp.get("overflow_total") == 0})
@@ -391,6 +395,63 @@ def diag_section(root: Path) -> tuple[dict, dict, list[dict]]:
           "diag_preempted_big": big.get("share_preempted_500ms"), "diag_preempted_big_control": big.get("share_opposite_500ms_control"),
           "diag_pred_r2": max((p["r2_oos"] for p in pred), default=None)}
     return {"diag_oracles": orc, "diag_mech": mech, "diag_signature": sig}, kp, []
+
+
+def fair_ab_section(runs: dict[str, Path], diags: dict[str, Path]) -> tuple[dict, dict, list[dict]]:
+    """D-038 A/B: the same strategy ladder (rungs 1 and 3, walk-forward selection, matched cancels, base latency)
+    on each simulator fair-value stream, with the paired gain of the per-event stream over the 1 s grid on the same
+    windows and the same engine, and the oracle ceilings on both streams. Reads reports/sim*, reports/sim_diag*."""
+    import polars as pl
+    cols = ["c1_spread", "c2_adverse", "c3_inventory"]
+    W = {}
+    rows = []
+    for name, root in runs.items():
+        j = root / "sim.json"
+        if not j.exists():
+            continue
+        R = json.loads(j.read_text())
+        # Why read the tags: reports/sim is whatever the last refresh produced; the label must come from the run, not the folder
+        stream = "per event" if R.get("fair_mode", "sec") == "event" else "1 s grid + BTC ticks"
+        engine = R.get("engine", 1)
+        parts = [pl.read_parquet(root / d / "band_windows.parquet").with_columns(pl.lit(d).alias("date"))
+                 for d in R["dates"][1:] if (root / d / "band_windows.parquet").exists()]
+        if not parts:
+            continue
+        w = pl.concat(parts, how="diagonal_relaxed").filter((pl.col("exp") == "band") & (pl.col("model") == R.get("model_base", "matched")) & pl.col("rung").is_in([1, 3]))
+        W[name] = w
+        g = w.group_by("rung", "fold").agg(pl.len().alias("windows"), pl.col("pnl").mean().alias("mean"), (pl.col("pnl").std() / pl.len().sqrt()).alias("se"),
+                                           pl.col("fills").sum().alias("fills"), pl.col("shares").sum().alias("shares"),
+                                           *[(100 * pl.col(c).sum() / pl.col("shares").sum()).alias(c[:2] + "_c") for c in cols]).sort("rung", "fold")
+        for r in g.iter_rows(named=True):
+            rows.append({"run": name, "stream": stream, "engine": engine, **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()}, "gain": None, "gain_se": None})
+    # paired gain: per-event minus 1 s grid, same engine, same windows
+    if "sim_ev" in W and "sim_sec" in W:
+        key = ["rung", "fold", "date", "yes"]
+        j = W["sim_ev"].select(*key, "pnl").join(W["sim_sec"].select(*key, pl.col("pnl").alias("pnl0")), on=key)
+        g = j.group_by("rung", "fold").agg((pl.col("pnl") - pl.col("pnl0")).mean().alias("gain"), ((pl.col("pnl") - pl.col("pnl0")).std() / pl.len().sqrt()).alias("gain_se"))
+        for r in g.iter_rows(named=True):
+            for x in rows:
+                if x["run"] == "sim_ev" and x["rung"] == r["rung"] and x["fold"] == r["fold"]:
+                    x["gain"], x["gain_se"] = round(r["gain"], 4), round(r["gain_se"], 4)
+    orc = []
+    for name, root in diags.items():
+        p = root / "table_oracles.parquet"
+        if p.exists():
+            dj = root / "diagnose.json"
+            fm = (json.loads(dj.read_text()).get("fair_mode", "sec") if dj.exists() else "sec")
+            stream = "per event" if fm == "event" else "1 s grid + BTC ticks"
+            orc += [{"run": name, "stream": stream, **r} for r in _records(p, ["rung", "oracle", "windows", "mean", "gain_per_window", "gain_se"])]
+    pick = lambda run, rung, fold: next((x for x in rows if x["run"] == run and x["rung"] == rung and x["fold"] == fold), {})
+    opick = lambda run, rung, o: next((x for x in orc if x["run"] == run and x["rung"] == rung and x["oracle"] == o), {})
+    ev_t, ev_l, sec_t = pick("sim_ev", 3, "test"), pick("sim_ev", 3, "lockbox"), pick("sim_sec", 3, "test")
+    kp = {"ab_r3_sec_test": sec_t.get("mean"), "ab_r3_event_test": ev_t.get("mean"), "ab_r3_event_test_se": ev_t.get("se"),
+          "ab_r3_event_lockbox": ev_l.get("mean"), "ab_r3_event_lockbox_se": ev_l.get("se"),
+          "ab_r3_gain_test": ev_t.get("gain"), "ab_r3_gain_test_se": ev_t.get("gain_se"), "ab_r3_gain_lockbox": ev_l.get("gain"), "ab_r3_gain_lockbox_se": ev_l.get("gain_se"),
+          "ab_r3_c2_sec": sec_t.get("c2_c"), "ab_r3_c2_event": ev_t.get("c2_c"),
+          "ab_btc_lead_500_gain": opick("sim_diag_ev", 3, "btc_lead_500ms").get("gain_per_window"), "ab_btc_lead_500_se": opick("sim_diag_ev", 3, "btc_lead_500ms").get("gain_se"),
+          "ab_fair_lead_1s_event": opick("sim_diag_ev", 3, "fair_lead_1s").get("gain_per_window"), "ab_fair_lead_1s_old": opick("sim_diag", 3, "fair_lead_1s").get("gain_per_window"),
+          "ab_all_event": opick("sim_diag_ev", 3, "all").get("gain_per_window"), "ab_all_old": opick("sim_diag", 3, "all").get("gain_per_window")}
+    return {"sim_fair_ab": rows, "sim_fair_ab_oracles": orc}, kp, []
 
 
 def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict[str, Path], tests: bool = True,
@@ -466,8 +527,14 @@ def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict
     s_data, s_kpis, s_chk = sim_section(sim_root)
     kpis.update(s_kpis)
     chk += s_chk
-    g_data, g_kpis, _ = diag_section(diag_root)
+    # Why prefer `<diag_root>_ev`: D-038's diagnosis ran on the event stream the simulator now uses; the
+    # older one (1 s stream, 4 days) stays on disk for research/strategy_diagnosis.md but is no longer current.
+    diag_ev = diag_root.parent / (diag_root.name + "_ev")
+    g_data, g_kpis, _ = diag_section(diag_ev if (diag_ev / "table_oracles.parquet").exists() else diag_root)
     kpis.update(g_kpis)
+    ab_data, ab_kpis, _ = fair_ab_section({"sim": sim_root, "sim_sec": sim_root.parent / "sim_sec", "sim_ev": sim_root.parent / "sim_ev"},
+                                          {"sim_diag": diag_root, "sim_diag_ev": diag_root.parent / "sim_diag_ev"})
+    kpis.update(ab_kpis)
     rec = recorder_health(data_dirs)
     chk += recorder_checks(rec)
     chk.append({"area": "code", "check": "test suite", "result": t["summary"], "ok": bool(t["passed"]) and not t["failed"]})
@@ -498,6 +565,7 @@ def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict
         "recorder": rec,
         "history": hist,
         **q_data,
+        **ab_data,
         **r_data,
         **s_data,
         **g_data,
