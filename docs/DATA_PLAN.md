@@ -326,3 +326,69 @@ The BTC 15m market alone is ~480 deltas/s per side; it is bot-requoted continuou
   - Verified on 1 h of raw frames (2026-11-06 15:00, 3.58 M frames): 49.9% fewer rows (deltas −50.0%, ws snapshots −48.9%); books rebuilt from stored rows matched the full books in 6,201,126 / 6,201,126 checks. Health columns `mirror_dropped` / `mirror_kept` watch it live; the audit prints them.
   - Schema rule that came with it: columns are only ever added at the end; readers use `union_by_name` (see `records.py`).
 - Still open: Austria geo-restriction (Phase 6); whether `fee_rate_bps` on trades is per-order or per-market.
+
+---
+
+## 6. Feeds for the fair-value research (proposed 2026-11-13, not yet recording)
+
+> Status: **proposal**. Nothing in this section records yet except the rows marked *recorded*.
+> Since 2026-11-13 only BTC 15m and Binance spot are recorded (D-041). Mind-map node IDs refer
+> to Notion "Fair-value prediction — breakdown".
+
+**How the sizes were measured.** Every feed was sampled live for 600 s from 2026-11-13 18:37 UTC
+(`ops/feed_sample.py`, results `reports/feeds/sample_2026-11-13T1837Z_600s.json`). Each was turned
+into GB/month with `ops/feed_sizes.py`, calibrated on what we really store for Binance spot:
+- On 2026-11-12 we stored 16.64 M spot messages as 162 MB raw + 242 MB Parquet = 404 MB/day.
+- Activity factor 1.29: that day's average message rate ÷ the sample's rate.
+- Storage factor 5.0: stored bytes ÷ zstd-12 bytes of the bare JSON, for raw + Parquet together.
+
+The same two factors are applied to every feed. So each "GB/month" means raw archive + parsed
+Parquet at our current formats, on an average day. A volatile month can be 2–3× higher.
+
+All feeds below are **free and public, with no key**, except where noted.
+
+| Tier | Feed (source → stream) | API | Data points | For (mind-map node) | msg/s | GB/month |
+|---|---|---|---|---|---|---|
+| *recorded* | Polymarket CLOB market WS, BTC 15m only | WS | book deltas, snapshots, trades, top of book, tick changes, resolutions | A2, B, C2: the target itself | ~450 | ~85 (est. after D-041: raw ~55, Parquet ~30) |
+| *recorded* | Binance spot `bookTicker` + `trade` | WS `data-stream.binance.vision` | best bid/ask on every change, every trade | A1 discovery venue | 150 | 12 |
+| *recorded* | Gamma / CLOB REST | REST | markets, strikes (`priceToBeat`/`finalPrice`), rewards, REST book anchors | reference | – | < 1 |
+| 1 | Polymarket RTDS `crypto_prices_chainlink` btc/usd (legacy; successor PolyBolt `price.crypto.twap` needs CLOB API credentials) | WS `ws-live-data.polymarket.com` | Chainlink BTC/USD, 1 per second | A1 settlement source: the gap $b$ is estimated today | 1.0 | 0.4 |
+| 1 | Polymarket RTDS `crypto_prices` btcusdt | WS, same | Polymarket's own Binance reference | A1, what other bots see | 1.0 | 0.2 |
+| 1 | Binance USDⓈ-M perp `bookTicker` | WS `fstream…/public/` | best bid/ask on every change | A1, C1: perp usually leads spot | 629 | **75** |
+| 1 | Binance perp `aggTrade`, `markPrice@1s`, `forceOrder` | WS `fstream…/market/` | trades with aggressor; mark, index, funding; liquidations (sampled: ≤ 1/s per symbol) | C1 aggressor flow, liquidations; funding as regime only | 11 | 2.5 |
+| 1 | Binance perp + spot `depth20@100ms` | WS | 20 levels each side every 100 ms | C1 imbalance, multi-level OFI | 20 | 11 |
+| 1 | Coinbase Exchange `ticker` + `matches` BTC-USD | WS `ws-feed.exchange.coinbase.com` | top of book with each trade, every trade | A1 USD venue (no USDT), US-hours discovery | 24 | 14 |
+| 1 | OKX `bbo-tbt` + `trades` BTC-USDT-SWAP; `liquidation-orders`, `funding-rate`, spot `bbo-tbt` | WS `ws.okx.com/ws/v5/public` (port 443; 8443 is being retired) | best bid/ask every 10 ms on change, trades, liquidations | A1 venue fusion, C1 | 48 | 9.4 |
+| 1 | Bybit linear `orderbook.1` + `publicTrade`; `allLiquidation`, `tickers` | WS `stream.bybit.com/v5/public/linear` | top of book, trades, **all** liquidations, OI, funding | A1, C1 liquidations | 34 | 15 |
+| 1 | Deribit `deribit_volatility_index.btc_usd`, `markprice.options.btc_usd`, `ticker.BTC-PERPETUAL.100ms` | WS `www.deribit.com/ws/api/v2` | DVOL, every option's mark IV, perp ticker | A1 σ (largest oracle gain in fair v1, §5 of `research/fair_value.md`) | 4.8 | 7.7 |
+| 2 | Binance perp `depth@100ms` (full diff book) | WS | every level change, 100 ms batches | C1 deep-book OFI, if depth20 shows signal | 10 | 71 |
+| 2 | Binance spot `depth@100ms` | WS | ″ | ″ | 10 | 16 |
+| 2 | Coinbase `level2_batch` | WS (Exchange; `level2`/`full` now need auth) | level changes, 50 ms batches | A1 depth on the USD venue | 16 | 27 |
+| 2 | Bybit linear `orderbook.50`, spot `orderbook.1` + trades; OKX `books5` | WS | 50 / 5 levels | C1 | 63 | 29 |
+| 2 | Polymarket RTDS `activity` (`orders_matched`, all markets; keep BTC 15m rows) | WS, same as RTDS | trades **with `proxyWallet`** | A2.4 wallets / who is toxic | 34 | 31 unfiltered, ~2–5 filtered |
+| later | Binance data.binance.vision futures `aggTrades`, `bookDepth`, `metrics` | free daily files | history for backtests before our start | backfill | – | – |
+| paid | Tardis.dev (historical tick books, all venues); Chainlink Data Streams direct | REST / files | – | not needed now | – | – |
+
+**Totals per month.**
+- Recorded now: ~100 GB.
+- Plus tier 1: ~240 GB, about 8 GB/day.
+- Plus tier 2: ~420 GB, about 14 GB/day.
+- A year at tier 1 is about 3 TB.
+
+**Clock and location.** The nowcast is about what *we* can know at time $t$, so every row keeps
+our receive stamp next to the venue's own timestamp. The two give each feed's staleness.
+Lead–lag measured on our receive clock includes each venue's network path to the recorder:
+- Binance, OKX and Bybit run in Tokyo.
+- Coinbase runs in the US East.
+- Deribit runs in London.
+
+Those numbers are only valid for the machine that will trade, so the recorder belongs where the
+engine will run (measure as in D-031).
+
+**Capacity on the current VPS** (2 vCPU Arm, 4 GB, 38 GB disk, keeps 7 days):
+- CPU and memory are fine. The recorder uses ~11 % of one core and 0.3 GB at ~600 msg/s. Tier 1
+  adds ~800 msg/s, mostly perp `bookTicker`.
+- The **disk is not**: 7 days at tier 1 is ~55 GB against 33 GB free. Hourly uploads to the
+  bucket (ARCHITECTURE step 2) therefore come before, or together with, tier 1.
+- New feeds run as a second service on the same box. It is the same system clock (chrony), and
+  a fault in it cannot stop the Polymarket recorder.
