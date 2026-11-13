@@ -397,6 +397,47 @@ def diag_section(root: Path) -> tuple[dict, dict, list[dict]]:
     return {"diag_oracles": orc, "diag_mech": mech, "diag_signature": sig}, kp, []
 
 
+def mm_benchmark(sim_root: Path, rung: int = 3, model: str = "pess") -> dict:
+    """D-039: the benchmark to beat — a rung as a market maker, ① spread + ② adverse selection at 60 s + ④ rebate,
+    ③ inventory left out, per 15-minute window under the pessimistic fill model, test days and lockbox.
+    Why without ③: inventory P&L does not scale with volume, has fat tails (a 0/1 resolution) and is not an edge we
+    can trade; the totals stay on the page, but only this number counts as market-making edge.
+    Reads the per-event run: reports/sim once the refresh has rebuilt it on the event stream, else reports/sim_ev."""
+    import polars as pl
+    root = sim_root
+    j = root / "sim.json"
+    if not j.exists() or json.loads(j.read_text()).get("fair_mode", "sec") != "event":
+        root = sim_root.parent / (sim_root.name + "_ev")
+        j = root / "sim.json"
+    if not j.exists():
+        return {}
+    R = json.loads(j.read_text())
+    parts = [pl.read_parquet(root / d / "band_windows.parquet").with_columns(pl.lit(d).alias("date"))
+             for d in R["dates"][1:] if (root / d / "band_windows.parquet").exists()]
+    if not parts:
+        return {}
+    w = (pl.concat(parts, how="diagonal_relaxed").filter((pl.col("exp") == "band") & (pl.col("rung") == rung) & (pl.col("model") == model))
+         .with_columns((pl.col("c1_spread") + pl.col("c2_adverse") + pl.col("c4_rebate")).alias("mm")))
+    kp = {"mm_rung": rung, "mm_model": model, "mm_test_days": ", ".join(R.get("test_days") or []), "mm_lockbox": R.get("lockbox")}
+    for fold in ("test", "lockbox"):
+        g = w.filter(pl.col("fold") == fold)
+        if g.height < 2:
+            continue
+        n, mu = g.height, g["mm"].mean()
+        se = g["mm"].std() / n ** 0.5
+        sh = g["shares"].sum()
+        c = lambda col: round(100 * g[col].sum() / sh, 3) if sh else None
+        kp.update({f"mm_{fold}_windows": n, f"mm_{fold}_mean": round(mu, 4), f"mm_{fold}_se": round(se, 4),
+                   f"mm_{fold}_lo95": round(mu - 1.96 * se, 4), f"mm_{fold}_hi95": round(mu + 1.96 * se, 4),
+                   f"mm_{fold}_c1_c": c("c1_spread"), f"mm_{fold}_c2_c": c("c2_adverse"), f"mm_{fold}_c4_c": c("c4_rebate"),
+                   f"mm_{fold}_net_c": round(100 * g["mm"].sum() / sh, 3) if sh else None,
+                   f"mm_{fold}_c3_mean": round(g["c3_inventory"].mean(), 4), f"mm_{fold}_total_mean": round(g["pnl"].mean(), 4)})
+    # Why a verdict word: the page states it from the data, so it flips by itself the day the bound clears zero
+    lo, lb = kp.get("mm_test_lo95"), kp.get("mm_lockbox_mean")
+    kp["mm_beaten"] = "beaten" if lo is not None and lb is not None and lo > 0 and lb > 0 else "not beaten"
+    return kp
+
+
 def fair_ab_section(runs: dict[str, Path], diags: dict[str, Path]) -> tuple[dict, dict, list[dict]]:
     """D-038 A/B: the same strategy ladder (rungs 1 and 3, walk-forward selection, matched cancels, base latency)
     on each simulator fair-value stream, with the paired gain of the per-event stream over the 1 s grid on the same
@@ -535,6 +576,7 @@ def build(repo: Path, out: Path, fair_root: Path, mk_root: Path, data_dirs: dict
     ab_data, ab_kpis, _ = fair_ab_section({"sim": sim_root, "sim_sec": sim_root.parent / "sim_sec", "sim_ev": sim_root.parent / "sim_ev"},
                                           {"sim_diag": diag_root, "sim_diag_ev": diag_root.parent / "sim_diag_ev"})
     kpis.update(ab_kpis)
+    kpis.update(mm_benchmark(sim_root))
     rec = recorder_health(data_dirs)
     chk += recorder_checks(rec)
     chk.append({"area": "code", "check": "test suite", "result": t["summary"], "ok": bool(t["passed"]) and not t["failed"]})

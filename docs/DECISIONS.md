@@ -450,3 +450,14 @@ Template:
   - rung 2 / 4 / 0 reruns: unchanged code, rerun by the next refresh.
 - **Ref:** `src/polymm/sim/inputs.py` (`fair_seconds`, `fair_ticks`, `book_events`, `refair`), `sim/engine.py` (`ENGINE_VERSION`, one decision per instant), `sim/attrib.py`, `sim/run.py` (`fair_mode`, `rungs`, reuse tags), `sim/diagnose.py` (`btc_lead_*`), `tests/test_sim.py` (3 new tests); `reports/sim_sec/`, `reports/sim_ev/`, `reports/sim_diag_ev/`; D-032, D-034, D-035, D-036
 - **Status:** active.
+
+### D-039 · 2026-11-13 · Market-making edge is counted without inventory: the benchmark to beat is ①+②+④ under the pessimistic fill model
+- **Decision:** a strategy's market-making edge is ① spread + ② adverse selection at 60 s + ④ rebate/rewards, per window, under the **pessimistic** fill model; ③ inventory is reported beside it but does not count as edge. The headline everywhere (Notion, dashboard, decisions) states this number first; totals with ③ are labelled as such.
+- **Benchmark to beat (rung 3, per-event fair value D-038, walk-forward settings, 10-share quotes, 75 ms; USD per 15-minute window):**
+  - test 2026-11-07 → 11-10, 355 windows: **−0.18 ± 0.21** (95 % −0.60 … +0.24); per filled share ① +0.93 ¢, ② −1.68 ¢, ④ +0.25 ¢, net −0.49 ¢. Other fill models −0.10 (optimistic) … −0.21 (proportional).
+  - lockbox 2026-11-11, 96 windows: **−0.47 ± 0.74**; net −1.15 ¢ per share.
+  - beaten when the pessimistic test-day 95 % lower bound is above zero and the pessimistic lockbox mean is positive.
+- **Why:** D-038's positive rung-3 totals (+0.68 pessimistic, +0.78 matched) come entirely from ③ (+0.90 ± 0.41 per window, matched: drift after the 60 s mark +0.57 ± 0.35, the leftover position at resolution +0.33 ± 0.17; ③a + ③b = ③ within 1e-14). Inventory P&L does not scale with volume (it scales with risk held), has fat tails (83 % of windows go into a 0/1 resolution holding about 19 shares; the leftover was on the winning side 53 % of the time against 52 % implied by the fair value one minute before the end, i.e. no skill shown), and is not a strategy we can trade now. ① + ② + ④ is the part a market maker controls through quoting and the part that grows with volume.
+- **Rejected / deferred:** counting ③a (drift after 60 s) as edge: only if the markout curve past 60 s (120 s / 300 s / window end, by fill type and day) shows a repeatable recovery out of sample; adding ①+②+④ as a fifth Gate B criterion in `sim/run.py`: next time the gate code is touched (the gate today runs on totals, which this decision overrides for reporting).
+- **Ref:** `src/polymm/dashboard.py` (`mm_benchmark`, kpis `mm_*`), dashboard card "Benchmark to beat" in section "Fair value A/B", Notion project page "Benchmark to beat"; `reports/sim_ev/<day>/band_windows.parquet`, `reports/sim_diag_ev/fills.parquet`; D-024 (τ = 60 s), D-032, D-038
+- **Status:** active.
