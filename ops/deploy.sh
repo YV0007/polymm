@@ -13,8 +13,13 @@ STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 git -C "$ROOT" archive HEAD | tar -x -C "$STAGE"
 git -C "$ROOT" rev-parse HEAD > "$STAGE/DEPLOYED_COMMIT"
+# Why chmod 755 and --chown: rsync -a copies the stage dir's mode (mktemp makes it 700) and
+# root's ownership onto /home/polymm/polymm, so until the chown below ran, nothing under it,
+# the data symlink included, was reachable by the service user: ~0.8 s of EACCES per deploy,
+# which killed the hourly upload twice on 2026-11-13. Now the directory never leaves 755/polymm.
+chmod 755 "$STAGE"
 ssh "$USER_AT" 'id polymm >/dev/null 2>&1 || useradd -m -s /bin/bash polymm; install -d -o polymm -g polymm /home/polymm/polymm'
-rsync -az --delete \
+rsync -az --delete --chown=polymm:polymm \
   --exclude data --exclude data_vps --exclude logs --exclude .venv --exclude reports --exclude '__pycache__' \
   "$STAGE/" "$USER_AT:/home/polymm/polymm/"
 ssh "$USER_AT" 'chown -R polymm:polymm /home/polymm/polymm'

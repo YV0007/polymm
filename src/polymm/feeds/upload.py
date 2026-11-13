@@ -70,17 +70,16 @@ def hour_dirs(root: Path, layers=DEFAULT_LAYERS):
         if not base.exists():
             continue
         for dt in sorted(base.glob("*/dt=*")) + sorted(base.glob("*/*/dt=*")):
-            hours = sorted(dt.glob("hour=*"))
-            for d in hours or [dt]:
-                try:
-                    has_files = any(p.is_file() and not p.name.startswith(".") for p in d.iterdir())
-                except PermissionError as e:
-                    # Why not raise: one partition another user wrote (first VPS run, 2026-11-13:
-                    # events built as root) must not end the whole hourly run
-                    log.warning("skipping %s: %s", d, e)
-                    continue
-                if has_files:
-                    yield d
+            try:
+                hours = sorted(dt.glob("hour=*"))
+                for d in hours or [dt]:
+                    if any(p.is_file() and not p.name.startswith(".") for p in d.iterdir()):
+                        yield d
+            except PermissionError as e:
+                # Why not raise: a partition we cannot read right now (a deploy made the tree
+                # unreachable for ~1 s on 2026-11-13, three runs died) is retried next hour;
+                # the other partitions must not wait for it
+                log.warning("skipping %s: %s", dt, e)
 
 
 def partition_end(d: Path) -> datetime | None:
