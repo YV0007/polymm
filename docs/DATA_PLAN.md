@@ -385,10 +385,12 @@ Lead–lag measured on our receive clock includes each venue's network path to t
 Those numbers are only valid for the machine that will trade, so the recorder belongs where the
 engine will run (measure as in D-031).
 
-**Capacity on the current VPS** (2 vCPU Arm, 4 GB, 38 GB disk, keeps 7 days):
+**Capacity on the current VPS** (2 vCPU Arm, 4 GB; data and logs on a 100 GB volume, `data -> /mnt/HC_Volume_…/polymm-data`, 67 GB free on 2026-11-13; keeps 7 days):
 - CPU and memory are fine. The recorder uses ~11 % of one core and 0.3 GB at ~600 msg/s. Tier 1
   adds ~800 msg/s, mostly perp `bookTicker`.
-- The **disk is not**: 7 days at tier 1 is ~55 GB against 33 GB free. Hourly uploads to the
-  bucket (ARCHITECTURE step 2) therefore come before, or together with, tier 1.
+- The **disk is the limit**: 7 days of recorded + tier 1 (~11 GB/day) is ~77 GB against 67 GB
+  free. Hourly uploads to the bucket (`polymm-data-7k3q`, fsn1, created 2026-11-13) let the VPS
+  keep 2–3 days instead; then the 100 GB volume is no longer needed (volumes can't shrink:
+  replace or drop it, the 33 GB free on the root disk hold 3 days).
 - New feeds run as a second service on the same box. It is the same system clock (chrony), and
   a fault in it cannot stop the Polymarket recorder.
