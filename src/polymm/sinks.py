@@ -66,6 +66,10 @@ class RawSink:
             self._open(dt, hour)
         payload = b"".join(lines)
         self._writer.write(payload)
+        # Why flush a block per write: the compressor otherwise holds ~128 KB of input before it
+        # reaches the file, which for a slow feed (PolyBolt Pyth, 1 msg/s) is the whole hour; a
+        # crash would lose it. One block boundary per flush interval costs ~nothing in ratio.
+        self._writer.flush(zstd.FLUSH_BLOCK)
         return len(payload)
 
     def _open(self, dt: str, hour: str) -> None:
