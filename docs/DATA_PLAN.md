@@ -414,7 +414,7 @@ VPS (Hetzner, fsn1)                                   Hetzner Object Storage  po
   (8 GB) go to an hourly burst server (CCX43 64 GB, €0.38/h) after an explicit estimate.
 - **Deploy**: `ops/deploy.sh polymm [restart|sync]` ships `git archive HEAD` (never the working
   tree); `ops/install_feeds_units.sh` installs the service and timers. Secrets live only in
-  `~/.config/polymm/{s3,polybolt}.env` on the VPS (mode 600), written over ssh; the PolyBolt key
+  `~/.config/polymm/{s3,polybolt}.env` on the VPS and `s3.env` on the laptop (mode 600, copied over ssh, so the laptop can upload its history and fetch tables); the PolyBolt key
   belongs to a throwaway wallet whose private key is in the laptop's Keychain
   (`ops/polybolt_creds.py`).
 
