@@ -174,7 +174,7 @@ class _FakeS3:
         self.objects: dict[str, int] = {}
         self.uploads = 0
 
-    def upload_file(self, path, bucket, key):
+    def upload_file(self, path, bucket, key, Config=None):
         self.objects[key] = Path(path).stat().st_size
         self.uploads += 1
 

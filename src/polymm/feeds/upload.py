@@ -12,6 +12,7 @@ and retries come with it.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -44,6 +45,16 @@ def s3_client(env_path: str = "~/.config/polymm/s3.env"):
     return c, env["S3_BUCKET"]
 
 
+@functools.lru_cache(maxsize=1)
+def transfer_config():
+    """Why cap the transfer threads: the first VPS run peaked at 2 GB with boto3's default 10
+    threads × 8 MB parts on 160 MB files; 4 threads × 16 MB keeps the same speed on the
+    datacenter link (same region) and leaves the recorders their memory on the 4 GB box."""
+    from boto3.s3.transfer import TransferConfig
+
+    return TransferConfig(max_concurrency=4, multipart_chunksize=16 * 2**20, multipart_threshold=32 * 2**20)
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -61,7 +72,14 @@ def hour_dirs(root: Path, layers=DEFAULT_LAYERS):
         for dt in sorted(base.glob("*/dt=*")) + sorted(base.glob("*/*/dt=*")):
             hours = sorted(dt.glob("hour=*"))
             for d in hours or [dt]:
-                if any(p.is_file() and not p.name.startswith(".") for p in d.iterdir()):
+                try:
+                    has_files = any(p.is_file() and not p.name.startswith(".") for p in d.iterdir())
+                except PermissionError as e:
+                    # Why not raise: one partition another user wrote (first VPS run, 2026-11-13:
+                    # events built as root) must not end the whole hourly run
+                    log.warning("skipping %s: %s", d, e)
+                    continue
+                if has_files:
                     yield d
 
 
@@ -129,7 +147,7 @@ def upload_partition(client, bucket: str, root: Path, d: Path, dry: bool = False
             b += size
             continue
         digest = sha256(p)
-        client.upload_file(str(p), bucket, key)
+        client.upload_file(str(p), bucket, key, Config=transfer_config())
         head = client.head_object(Bucket=bucket, Key=key)
         if head["ContentLength"] != size:
             raise RuntimeError(f"size mismatch after upload: {key} local {size} remote {head['ContentLength']}")
@@ -211,7 +229,7 @@ def run_fetch(root: Path, env_path: str, prefixes: list[str], dry: bool = False)
                 else:
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     tmp = dst.with_name(dst.name + ".part")
-                    client.download_file(bucket, key, str(tmp))
+                    client.download_file(bucket, key, str(tmp), Config=transfer_config())
                     os.replace(tmp, dst)
                 stats["files"] += 1
                 stats["bytes"] += size
