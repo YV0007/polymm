@@ -1,0 +1,23 @@
+# External feeds recorder (D-042): Binance perp/spot depth, Coinbase, OKX, Bybit, Hyperliquid,
+# Deribit, PolyBolt, RTDS. Separate from polymm.service so a fault here never touches the
+# Polymarket recorder. Installed by ops/install_feeds_units.sh.
+#   systemctl status polymm-feeds      journalctl -u polymm-feeds -f
+[Unit]
+Description=polymm external market-data feeds recorder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=polymm
+WorkingDirectory=/home/polymm/polymm
+ExecStart=/home/polymm/.local/bin/uv run --frozen --project /home/polymm/polymm polymm-feeds -c /home/polymm/polymm/config.yaml record
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=120
+# Why Nice: the Polymarket recorder keeps priority on the 2 vCPUs during a burst
+Nice=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

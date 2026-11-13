@@ -1,0 +1,9 @@
+[Unit]
+Description=polymm hourly upload (6 minutes past the hour; the hour's files are closed by then)
+
+[Timer]
+OnCalendar=*-*-* *:06:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

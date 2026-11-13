@@ -1,0 +1,15 @@
+# Hourly upload of every closed hour (all layers) to the bucket, then prune uploaded feeds
+# partitions older than 3 days (D-042). Started by polymm-feeds-upload.timer.
+[Unit]
+Description=polymm upload closed hours to object storage
+
+[Service]
+Type=oneshot
+User=polymm
+WorkingDirectory=/home/polymm/polymm
+# Why flock: the first run (history) can take longer than an hour; two uploads at once
+# would race on the manifests.
+ExecStart=/usr/bin/flock -n /home/polymm/.polymm-upload.lock /home/polymm/.local/bin/uv run --frozen --project /home/polymm/polymm polymm-feeds -c /home/polymm/polymm/config.yaml upload --prune-days 3
+Nice=10
+IOSchedulingClass=idle
+Environment=PYTHONUNBUFFERED=1

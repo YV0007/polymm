@@ -1,0 +1,42 @@
+date,time,tz,event,source,importance,note
+2026-11-06,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation October 2026
+2026-11-10,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI October 2026
+2026-11-25,08:30,America/New_York,pce,bea.gov/news/schedule (read 2026-11-13),high,Personal Income and Outlays October 2026
+2026-11-25,08:30,America/New_York,gdp,bea.gov/news/schedule (read 2026-11-13),medium,GDP Q3 2026 second estimate
+2026-12-04,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation November 2026
+2026-12-09,14:00,America/New_York,fomc,federalreserve.gov/monetarypolicy/fomccalendars.htm (read 2026-11-13),high,FOMC statement + SEP; press conference 14:30 ET
+2026-12-10,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI November 2026
+2026-12-23,08:30,America/New_York,pce,bea.gov/news/schedule (read 2026-11-13),high,Personal Income and Outlays November 2026
+2026-12-23,08:30,America/New_York,gdp,bea.gov/news/schedule (read 2026-11-13),medium,GDP Q3 2026 third estimate
+2027-01-08,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation December 2026
+2027-01-13,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI December 2026
+2027-01-27,14:00,America/New_York,fomc,federalreserve.gov/monetarypolicy/fomccalendars.htm (read 2026-11-13),high,FOMC statement (2027 dates tentative)
+2027-02-05,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation January 2027
+2027-02-11,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI January 2027
+2027-03-05,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation February 2027
+2027-03-10,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI February 2027
+2027-03-17,14:00,America/New_York,fomc,federalreserve.gov/monetarypolicy/fomccalendars.htm (read 2026-11-13),high,FOMC statement (2027 dates tentative)
+2027-04-02,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation March 2027
+2027-04-13,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI March 2027
+2027-04-28,14:00,America/New_York,fomc,federalreserve.gov/monetarypolicy/fomccalendars.htm (read 2026-11-13),high,FOMC statement (2027 dates tentative)
+2027-05-07,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation April 2027
+2027-05-12,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI April 2027
+2027-06-04,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation May 2027
+2027-06-09,14:00,America/New_York,fomc,federalreserve.gov/monetarypolicy/fomccalendars.htm (read 2026-11-13),high,FOMC statement (2027 dates tentative)
+2027-06-10,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI May 2027
+2027-07-02,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation June 2027
+2027-07-14,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI June 2027
+2027-07-28,14:00,America/New_York,fomc,federalreserve.gov/monetarypolicy/fomccalendars.htm (read 2026-11-13),high,FOMC statement (2027 dates tentative)
+2027-08-06,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation July 2027
+2027-08-11,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI July 2027
+2027-09-03,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation August 2027
+2027-09-14,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI August 2027
+2027-09-15,14:00,America/New_York,fomc,federalreserve.gov/monetarypolicy/fomccalendars.htm (read 2026-11-13),high,FOMC statement (2027 dates tentative)
+2027-10-08,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation September 2027
+2027-10-14,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI September 2027
+2027-10-27,14:00,America/New_York,fomc,federalreserve.gov/monetarypolicy/fomccalendars.htm (read 2026-11-13),high,FOMC statement (2027 dates tentative)
+2027-11-05,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation October 2027
+2027-11-10,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI October 2027
+2027-11-17,14:00,America/New_York,fomc,federalreserve.gov/monetarypolicy/fomccalendars.htm (read 2026-11-13),high,FOMC statement (2027 dates tentative)
+2027-12-03,08:30,America/New_York,nfp,bls.gov/schedule/news_release/empsit.htm (read 2026-11-13),high,Employment Situation November 2027
+2027-12-10,08:30,America/New_York,cpi,bls.gov/schedule/news_release/cpi.htm (read 2026-11-13),high,CPI November 2027

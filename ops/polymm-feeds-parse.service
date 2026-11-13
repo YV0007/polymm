@@ -1,0 +1,13 @@
+# Daily parse of yesterday's raw feeds into tables + checks (D-042). Started by the timer at
+# 00:20 UTC; the 01:06 upload then ships the tables.
+[Unit]
+Description=polymm daily parse of the external feeds
+
+[Service]
+Type=oneshot
+User=polymm
+WorkingDirectory=/home/polymm/polymm
+ExecStart=/home/polymm/.local/bin/uv run --frozen --project /home/polymm/polymm polymm-feeds -c /home/polymm/polymm/config.yaml parse --date yesterday
+Nice=15
+IOSchedulingClass=idle
+Environment=PYTHONUNBUFFERED=1

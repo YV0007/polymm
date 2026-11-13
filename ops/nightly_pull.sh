@@ -26,7 +26,9 @@ echo "== $(date -u +%FT%TZ) start host=$HOST dest=$DEST keep=${KEEP_DAYS}d dry=$
 # Why --timeout and keepalives: a stalled link must fail in minutes, not hang; then retry.
 ok=0
 for attempt in 1 2 3; do
-  if rsync -a --partial-dir=.rsync-partial --timeout=120 --exclude '*.tmp' --exclude '.rsync-partial' --stats \
+  # Why --exclude feeds: the external feeds (D-042) go VPS -> bucket; the laptop fetches
+  # their tables from the bucket on demand (polymm-feeds fetch), never the raw stream.
+  if rsync -a --partial-dir=.rsync-partial --timeout=120 --exclude '*.tmp' --exclude '.rsync-partial' --exclude 'feeds' --stats \
        -e "ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ConnectTimeout=20" \
        "polymm@$HOST:$REMOTE/" "$DEST/" | grep -E "Number of .*files transferred|Total transferred"; then
     ok=1; break
