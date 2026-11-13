@@ -93,18 +93,36 @@ def load_manifest(d: Path) -> dict:
         return {}
 
 
+def remote_listing(client, bucket: str, prefix: str) -> dict[str, tuple[int, str]]:
+    out = {}
+    for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        for o in page.get("Contents", []):
+            out[o["Key"]] = (o["Size"], o.get("ETag", "").strip('"'))
+    return out
+
+
 def upload_partition(client, bucket: str, root: Path, d: Path, dry: bool = False) -> tuple[int, int]:
     """Upload the files of one partition that the manifest does not list yet. Returns (files, bytes)."""
     man = load_manifest(d)
     files = sorted(p for p in d.iterdir() if p.is_file() and not p.name.startswith(".") and p.suffix != ".tmp")
     n = b = 0
     changed = False
+    remote: dict[str, tuple[int, str]] | None = None
     for p in files:
         size = p.stat().st_size
         rec = man.get(p.name)
         if rec and rec.get("size") == size:
             continue
         key = str(p.relative_to(root))
+        if remote is None:
+            # Why list the bucket once per partition: a second machine holding the same days
+            # (the laptop's copy of what the VPS uploaded) must not send them again; one LIST
+            # per partition tells us what is already there, and a size match is recorded as done
+            remote = remote_listing(client, bucket, str(d.relative_to(root)) + "/")
+        if key in remote and remote[key][0] == size:
+            man[p.name] = {"size": size, "sha256": sha256(p), "etag": remote[key][1], "uploaded_at": "already in bucket"}
+            changed = True
+            continue
         if dry:
             log.info("would upload %s (%d B)", key, size)
             n += 1

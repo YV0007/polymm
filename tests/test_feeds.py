@@ -172,12 +172,33 @@ def test_parse_day_round_trip_and_checks(tmp_path):
 class _FakeS3:
     def __init__(self):
         self.objects: dict[str, int] = {}
+        self.uploads = 0
 
     def upload_file(self, path, bucket, key):
         self.objects[key] = Path(path).stat().st_size
+        self.uploads += 1
 
     def head_object(self, Bucket, Key):
         return {"ContentLength": self.objects[Key], "ETag": '"x"'}
+
+    def get_paginator(self, name):
+        objs = self.objects
+
+        class _P:
+            def paginate(self, Bucket, Prefix):
+                yield {"Contents": [{"Key": k, "Size": v, "ETag": '"e"'} for k, v in objs.items() if k.startswith(Prefix)]}
+        return _P()
+
+
+def test_upload_skips_files_already_in_bucket(tmp_path):
+    root = tmp_path / "data"
+    d = root / "events" / "tob" / "dt=2026-11-05" / "hour=10"
+    d.mkdir(parents=True)
+    (d / "p.parquet").write_bytes(b"12345")
+    s3 = _FakeS3()
+    s3.objects["events/tob/dt=2026-11-05/hour=10/p.parquet"] = 5  # uploaded by the other machine
+    assert U.upload_partition(s3, "bkt", root, d) == (0, 0) and s3.uploads == 1  # only the manifest
+    assert json.loads((d / U.MANIFEST).read_text())["p.parquet"]["uploaded_at"] == "already in bucket"
 
 
 def test_upload_partition_manifest_and_prune(tmp_path, monkeypatch):
