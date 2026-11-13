@@ -202,6 +202,9 @@ def fed_rung(cfg: SimConfig, P: Dy.Prepared, S: dict, d: str, rk: dict) -> pl.Da
     rewards our resting orders would have scored. Descriptive: five markets, no resolution in the
     sample (fills marked to the day's last fair value)."""
     yes = P.seg.filter(pl.col("family") == "fed_dec_2026")["yes"].unique().to_list()
+    if not yes:
+        # Why: Fed recording is paused since 2026-11-13 (D-041); a day without Fed books has no rung 5
+        return pl.DataFrame()
     pools = RS.pools_for(cfg.data_dirs[0], yes)
     win = S["segments"].rename({"t0": "t_start", "t1": "t_last"}).select("yes", "t_start", "t_last")
     out = []

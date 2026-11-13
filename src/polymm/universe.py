@@ -40,7 +40,7 @@ class UniverseWatcher:
         """Pure function of time + rules. Testable without network."""
         now = now or time.time()
         out: list[tuple[Family, str]] = []
-        for fam in self.cfg.families:
+        for fam in self.cfg.active_families:  # paused families: no lookups, no tokens (D-041)
             if fam.kind == "updown":
                 w = fam.window_s or 900
                 t0 = int(now // w) * w
@@ -121,7 +121,7 @@ class UniverseWatcher:
         """Tokens grouped by market family, one group per WS connection (D-022).
         Both tokens of a market always land in the same group, so the mirror check
         (A1) and the per-market reconnect markers see the whole market."""
-        out: dict[str, set[str]] = {f.name: set() for f in self.cfg.families}
+        out: dict[str, set[str]] = {f.name: set() for f in self.cfg.active_families}
         for aid, cond in self.token_cond.items():
             mi = self.markets.get(cond)
             out.setdefault(mi.family if mi is not None else "other", set()).add(aid)

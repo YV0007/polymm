@@ -461,3 +461,24 @@ Template:
 - **Rejected / deferred:** counting ③a (drift after 60 s) as edge: only if the markout curve past 60 s (120 s / 300 s / window end, by fill type and day) shows a repeatable recovery out of sample; adding ①+②+④ as a fifth Gate B criterion in `sim/run.py`: next time the gate code is touched (the gate today runs on totals, which this decision overrides for reporting).
 - **Ref:** `src/polymm/dashboard.py` (`mm_benchmark`, kpis `mm_*`), dashboard card "Benchmark to beat" in section "Fair value A/B", Notion project page "Benchmark to beat"; `reports/sim_ev/<day>/band_windows.parquet`, `reports/sim_diag_ev/fills.parquet`; D-024 (τ = 60 s), D-032, D-038
 - **Status:** active.
+
+### D-040 · 2026-11-13 · Fair-value target: the expected reference price at a term structure of horizons, in log-odds
+- **Decision:** the fair value we research and model is a forecast curve, not a single number:
+  $$\hat{x}_t(h) = \mathbb{E}\left[x^{\text{ref}}_{t+h} \mid \mathcal{F}_t\right], \qquad h \in \{0.1, 0.25, 0.5, 1, 2, 5, 30, 60\}\ \text{s}$$
+  - in log-odds, on our receive clock, updated on every event;
+  - $x^{\text{ref}}$ (mid, microprice or event-time mid) is chosen empirically: whichever best explains our fills' markouts;
+  - the **quoting** fair value is $\hat{x}_t(h_{\text{rest}})$, $h_{\text{rest}} \approx$ order latency + expected resting time (expected 0.5–2 s on BTC 15m), chosen by walk-forward simulator P&L; it may be a weighted mix of horizons and depend on the state;
+  - the short end (≤ 0.25 s) sets urgency (cancel/replace); orders move only when ≥ 1 tick off or crossed by the fair value; cancels before new orders;
+  - the long end is checked against resolution (Brier, favourite–longshot bias);
+  - work order: nowcast (where the market will converge given what is already known: BTC venues, book state) first, then forecast (new information in $(t, t+h]$).
+- **Why:** the expected markout of a fill at price $P$ is $s(\hat{x}_t(\tau) - P)$, so this is exactly what quoting needs; the conditional mean minimises squared error and serves every later use (quoting, cancels, markouts, simulator, live engine) without a new target for each; Stoikov's microprice and Hasbrouck's efficient price are special cases. A true fair value $\mathbb{E}[V_T \mid \mathcal{F}_t]$ is a martingale and cannot be predicted; what we can predict is the market's convergence to it.
+- **Rejected / deferred:** a pick-off / crossing-probability target (too specialised before the fair value is good; parked); a single-horizon fair value (D-023 fitted at 30 s, the simulator needs ~1 s).
+- **Ref:** Notion "📁 Fair value — research" (definition page, mind-map breakdown); D-023, D-036, D-038, D-039
+- **Status:** active. Next: research plan (one hypothesis per mind-map node).
+
+### D-041 · 2026-11-13 · Pause recording of the BTC daily ladder and the Fed December markets
+- **Decision:** `config.yaml` families get `enabled:` (default true); `btc_daily_ladder` and `fed_dec_2026` are set to `enabled: false` from 2026-11-13. A paused family gets no Gamma lookups, no WebSocket connection and no rows; its rule stays and switching it back on needs only the flag. Their history (2026-11-05 … 11-13) stays in the store, so every earlier result can be rebuilt; the pipeline steps already skip families with no rows on a day, and sim's Fed rung 5 now returns nothing on a day without Fed books.
+- **Why:** the research is on BTC 15m only (D-036, D-040). Measured on 2026-11-12 10–14 UTC, the two families were 28 % of `book_events` rows (ladder 26 %, Fed 2 %) and 75 % of top-of-book rows; the ladder is also ~80 % of `polymm fair`'s grid memory (ARCHITECTURE §1). Pausing them saves disk, memory and one WebSocket connection without losing the code.
+- **Rejected / deferred:** rewriting the past files to move ladder/Fed rows into a separate archive: the rows are interleaved with BTC 15m in the same hourly files, the files are already compressed (Parquet zstd; raw zstd-12 at 9.4×, zstd-19 would gain only ~25 %), and rewritten files would collide with the nightly rsync; they go to the cold tier of the bucket with everything else (ARCHITECTURE step 2).
+- **Ref:** `config.yaml`, `src/polymm/config.py` (`Family.enabled`, `Config.active_families`), `universe.py`, `recorder.py`, `sim/run.py` (`fed_rung`), `tests/test_recorder.py`; D-022, D-036
+- **Status:** active.

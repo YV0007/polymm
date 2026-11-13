@@ -49,7 +49,8 @@ class Recorder:
         # per connection fills it less often, and a cut stays inside one family.
         # All shards feed the same queue: one consumer, one parser, one clock.
         conn_ids = itertools.count(1)
-        names = [f.name for f in cfg.families] if rs.ws_shard_by_family else ["all"]
+        # Why active only (D-041): a paused family gets no connection at all
+        names = [f.name for f in cfg.active_families] if rs.ws_shard_by_family else ["all"]
         self.sources: dict[str, WsSource] = {
             n: WsSource(cfg.endpoints.ws_market, self.queue, rs.ping_interval_s, rs.custom_feature_enabled, n, conn_ids)
             for n in names

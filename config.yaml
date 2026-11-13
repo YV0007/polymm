@@ -35,6 +35,9 @@ spot:                          # Binance BTC/USDT, recorded in the same process 
   streams: [bookTicker, trade] # best bid/ask on every change + every trade
   history_base: https://data.binance.vision/data/spot/daily
 
+# enabled: false pauses a family (D-041): no Gamma lookups, no WS connection, no rows; the rule
+# stays so it can be switched back on. Paused 2026-11-13: the research is on BTC 15m only (D-036);
+# their history (2026-11-05 … 11-13) stays in the store and the pipeline still reads it.
 families:
   - name: btc_15m
     kind: updown
@@ -46,6 +49,8 @@ families:
     slug_prefix: bitcoin-above-on
     timezone: America/New_York # the date in the slug is the ET date of the 12:00 ET resolution
     lookahead_days: 2          # today + next 2 days
+    enabled: false             # paused 2026-11-13 (D-041)
   - name: fed_dec_2026
     kind: fixed_event
     event_slug: fed-decision-in-december-20260729232808632
+    enabled: false             # paused 2026-11-13 (D-041)

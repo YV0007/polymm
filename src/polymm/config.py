@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Paths(BaseModel):
@@ -59,6 +59,10 @@ class Family(BaseModel):
     timezone: str = "America/New_York"
     lookahead_days: int = 2
     event_slug: str | None = None
+    # Why a switch and not deleting the rule (D-041): a paused family keeps its rule, its
+    # parsers and its history; set it back to true and the next universe refresh resolves it
+    # again. Paused families get no Gamma lookups, no WS connection and no rows.
+    enabled: bool = True
 
 
 class Spot(BaseModel):
@@ -83,6 +87,19 @@ class Config(BaseModel):
     recorder: RecorderSettings = Field(default_factory=RecorderSettings)
     spot: Spot = Field(default_factory=Spot)
     families: list[Family]
+
+    @model_validator(mode="after")
+    def _one_family_on(self) -> "Config":
+        # Why: with every family paused the recorder would open no market connection and
+        # write nothing but Binance; that is a config mistake, not a mode
+        if not any(f.enabled for f in self.families):
+            raise ValueError("every family is paused (enabled: false); keep at least one on")
+        return self
+
+    @property
+    def active_families(self) -> list[Family]:
+        """The families that are recorded now; paused ones (enabled: false) are skipped."""
+        return [f for f in self.families if f.enabled]
 
     # Why: resolve relative paths against the config file's directory, so
     # `polymm record` works from any cwd and from launchd/systemd.

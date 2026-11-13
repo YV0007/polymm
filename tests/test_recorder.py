@@ -54,3 +54,19 @@ def test_tokens_grouped_by_family_and_conn_lookup():
 def test_single_connection_keeps_global_marker():
     r = Recorder(_cfg(shard=False))
     assert list(r.sources) == ["all"] and r._conds_of_conn(1) is None
+
+
+def test_paused_family_gets_no_connection_and_no_slugs():
+    """D-041: enabled: false keeps the rule but records nothing for it."""
+    import pytest
+    from polymm.universe import UniverseWatcher
+    cfg = Config(families=[Family(name="btc_15m", kind="updown", slug_prefix="x", window_s=900),
+                           Family(name="lad", kind="daily_ladder", slug_prefix="l", enabled=False),
+                           Family(name="fed", kind="fixed_event", event_slug="f", enabled=False)])
+    r = Recorder(cfg)
+    assert list(r.sources) == ["btc_15m"]
+    slugs = UniverseWatcher(cfg, None).desired_slugs(now=1_800_000_000)
+    assert {f.name for f, _ in slugs} == {"btc_15m"} and len(slugs) == 3
+    assert r.universe.desired_tokens_by_family() == {"btc_15m": set()}
+    with pytest.raises(ValueError):
+        Config(families=[Family(name="fed", kind="fixed_event", event_slug="f", enabled=False)])
