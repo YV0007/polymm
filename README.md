@@ -43,19 +43,14 @@ About 36 shares and 4 fills per window. Peak capital is about 130 USD.
 
 ## Architecture
 
-```text
- VPS (Hetzner, 24/7)                                    Object storage
- ├─ polymm record        Polymarket CLOB WS + REST,     ┌──────────────────────┐
- │                       gap checks, Binance spot   ──► │ raw zstd + Parquet,  │
- └─ polymm-feeds record  12 WS + 3 REST polls:          │ hourly upload,       │
-                         Binance perp/spot, Coinbase,   │ sha256-verified      │
-                         OKX, Bybit, Hyperliquid,       └──────────┬───────────┘
-                         Deribit, Chainlink (+60 s TWAP)           │
-                                                                   ▼
- Research (laptop for slices, burst server by the hour for full days)
-   replay ──► quality ──► fair value ──► markouts ──► queue/fill model ──► simulator
-   (L2 book    (clean       (log-odds,     (② by τ,      (virtual orders,      (event engine,
-    per event)  windows)     walk-forward)  signature)    fill prob, toxicity)  latency, fees)
+```math
+\begin{aligned}
+&\textbf{Recording}\ \text{(VPS, 24/7)} && \text{Polymarket CLOB: WS + REST} \\
+& && \text{Binance} \cdot \text{Coinbase} \cdot \text{OKX} \cdot \text{Bybit} \cdot \text{Hyperliquid} \cdot \text{Deribit} \cdot \text{Chainlink} \\[4pt]
+&\textbf{Storage} && \longrightarrow\ \text{object storage: raw zstd + Parquet, hourly upload} \\[4pt]
+&\textbf{Research} && \longrightarrow\ \text{replay} \to \text{quality} \to \text{fair value} \\
+& && \longrightarrow\ \text{markouts} \to \text{queue model} \to \text{simulator}
+\end{aligned}
 ```
 
 | Layer | Implementation |
