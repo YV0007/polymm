@@ -63,37 +63,17 @@ About 36 shares and 4 fills per window. Peak capital is about 130 USD.
                                      ▼
   MODELLING PIPELINE
 
-  replay        L2 book rebuilt from WS deltas, event by event;
-                each change labelled add / cancel / fill.
-                6,201,126 of 6,201,126 rebuilt books match REST.
+  replay          L2 book rebuilt event by event
     ▼
-  quality       only clean windows: no reconnect, no confirmed gap,
-                no crossed book, YES = 1 − NO mirror holds.
+  quality         clean windows only
     ▼
-  fair value    in log-odds, updated on every book event and BTC tick
-                x      = x_book + w · (x_btc + offset − x_book)
-                x_book = logit(mid) + adj[spread, imbalance]
-                x_btc  = logit Φ( ln(E[A]/K) / σ·√τ_eff )
-                A  = Chainlink 60 s settlement average, its known
-                     part already in E[A]
-                τ_eff = τ − 40 s,  or τ³ / (3·60²) inside the last
-                     minute (variance left in the average)
-                σ  = EWMA of de-seasonalised 1-min BTC returns
-                offset = EWMA anchor of x_book − x_btc;
-                w fitted walk-forward, never on the test day
+  fair value      order book + BTC digital option, in log-odds
     ▼
-  markouts      every public trade as a maker fill, YES-equivalent;
-                s·(m(t+τ) − P) for τ = 0.1 s … resolution, with m
-                read just before the taker's first consumed level
+  markouts        adverse selection from 0.1 s to resolution
     ▼
-  queue model   virtual orders join the back of each level; shares
-                ahead drain on trades and cancels under 4 cancel
-                models → P(fill | position), toxicity by position
+  queue model     fill probability and toxicity by queue position
     ▼
-  simulator     quotes at fair ± h, jump guard, reduce-only at expiry;
-                75 ms order path (lognormal + bursts), post-only
-                rejects, cancels in flight, fee 7%·p(1−p), 20% rebate;
-                walk-forward settings, lockbox day, deflated Sharpe
+  simulator       latency, cancels, fees, P&L decomposition
 ```
 
 | Layer | Implementation |
@@ -103,6 +83,96 @@ About 36 shares and 4 fills per window. Peak capital is about 130 USD.
 | Compute | `ops/burst.sh` creates a 16-vCPU / 64 GB server, fetches from the bucket, runs, pulls results and deletes it. A TTL guards against forgotten servers. Cost: €0.38/h. |
 
 Measured latency: Polymarket feed to VPS p50 11 ms, Binance feed p50 127 ms, VPS to CLOB order round trip p50 46–52 ms.
+
+## Models
+
+### Fair value
+
+**Intuition.** Two estimates of the probability that BTC finishes above the strike:
+- **The order book.** The mid price, nudged toward the side where the book leans.
+- **An option model on BTC.** It reacts to BTC moves before the book does.
+
+The fair value is the book, pulled part of the way toward the option model. Everything is in log-odds, $x = \ln\frac{p}{1-p}$, so a move near 1 ¢ or 99 ¢ counts as much as one near 50 ¢.
+
+```math
+x_t = x^{\text{book}}_t + w\left(x^{\text{btc}}_t + o_t - x^{\text{book}}_t\right)
+```
+
+- $x_t$: fair value at time $t$, in log-odds, recomputed on every book update and every BTC tick.
+- $w$: how far to trust the option model over the book. It is fitted on past days only.
+- $o_t$: a slow-moving average of the gap between the two estimates. It removes the model's persistent level error, so only its moves count.
+
+**Book estimate.** The mid, corrected by how the price moved on average after the same spread and imbalance in the past:
+
+```math
+x^{\text{book}}_t = \operatorname{logit}(\text{mid}_t) + \text{adj}\left[\text{spread}_t,\ \text{imbalance}_t\right]
+```
+
+Here imbalance = bid size / (bid size + ask size) at the best prices.
+
+**Option estimate.** The market pays out if BTC's settlement price ends above the strike. That is a digital option:
+
+```math
+x^{\text{btc}}_t = \operatorname{logit}\,\Phi\!\left(\frac{\ln\left(\mathbb{E}_t[A]/K\right)}{\sigma_t\sqrt{\tau_{\text{eff}}}}\right),
+\qquad
+\tau_{\text{eff}} =
+\begin{cases}
+\tau - 40\ \text{s} & \tau > 60\ \text{s} \\
+\tau^{3} / (3 \cdot 60^{2}) & \tau \le 60\ \text{s}
+\end{cases}
+```
+
+- $\Phi$: standard normal CDF.
+- $K$: the strike (BTC price at the window's start).
+- $A$: the settlement price, an average of the Chainlink BTC price over the last 60 s.
+- $\mathbb{E}_t[A]$: its expected value, with the part of the average already observed filled in.
+- $\sigma_t$: BTC volatility, an exponentially weighted average of 1-minute returns with the time-of-day pattern removed.
+- $\tau$: time to expiry. $\tau_{\text{eff}}$ is the time-equivalent of the uncertainty left. Averaging over the last minute removes part of it, and inside that minute the observed part is fixed.
+
+### Markouts
+
+**Intuition.** After a maker is filled, watch where the fair value goes. If it moves against the maker, the taker knew something. The size of that move is the adverse selection.
+
+```math
+M_i(\tau) = s_i\left(m_{t_i+\tau} - P_i\right)
+```
+
+- $i$: one fill.
+- $s_i$: the maker's side, $+1$ bought or $-1$ sold.
+- $P_i$: fill price.
+- $t_i$: fill time.
+- $m_{t}$: fair value at time $t$.
+- $\tau$: horizon, from 0.1 s to the market's resolution.
+
+Every public trade counts as a fill for the resting maker. $m$ is read just before the trade: at the moment we receive it, the book has already moved in 21 % of cases.
+
+### Queue model
+
+**Intuition.** On a 1-tick book everyone quotes the same price, so what matters is the place in line. Orders at the back fill only when a large trade sweeps the whole level, which is exactly when the price is about to move.
+
+A simulated order joins the back of its price level. The shares ahead of it shrink as trades and cancellations happen; four different assumptions are tried for where cancellations sit in the line. It fills when a trade reaches it. Each place in line, $x$ = shares ahead, gets a value:
+
+```math
+V(x) = P(\text{fill} \mid x)\left(h - \mathbb{E}\left[a \mid \text{fill}, x\right]\right)
+```
+
+- $P(\text{fill} \mid x)$: chance of being filled from place $x$.
+- $h$: the half-spread earned on a fill.
+- $a$: how far the fair value moves against the maker afterwards.
+
+### Simulator
+
+The strategy runs inside the recorded book, as if it had been live:
+- **Quoting.** Buy $h$ below fair and sell $h$ above. After a sudden fair-value move, pull the side about to be hit for 1–3 s. In the last minute, only reduce the position.
+- **Execution.**
+  - Orders take about 75 ms to arrive, with random delay and occasional bursts.
+  - Orders that would cross the spread are rejected.
+  - A cancel can arrive too late, and the order still fills.
+  - Takers pay a fee of $7\% \cdot p(1-p)$ per share, where $p$ is the price. Makers get 20 % of it back.
+- **Validation.**
+  - Settings are chosen on past days only.
+  - The last day is held back and tested once.
+  - The Sharpe ratio is adjusted for how many settings were tried.
 
 ## Repository
 
