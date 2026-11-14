@@ -61,31 +61,45 @@ About 36 shares and 4 fills per window. Peak capital is about 130 USD.
                     │  raw zstd + Parquet, hourly    │
                     └────────────────┬───────────────┘
                                      ▼
-  RESEARCH  ·  burst servers by the hour
+  MODELLING PIPELINE
 
-      replay          L2 book rebuilt event by event
-        ▼
-      quality         clean windows, gap flags
-        ▼
-      fair value      log-odds, walk-forward
-        ▼
-      markouts        adverse selection by horizon
-        ▼
-      queue model     fill probability, toxicity by queue position
-        ▼
-      simulator       latency, fees, P&L decomposition
+  replay        L2 book rebuilt from WS deltas, event by event;
+                each change labelled add / cancel / fill.
+                6,201,126 of 6,201,126 rebuilt books match REST.
+    ▼
+  quality       only clean windows: no reconnect, no confirmed gap,
+                no crossed book, YES = 1 − NO mirror holds.
+    ▼
+  fair value    in log-odds, updated on every book event and BTC tick
+                x      = x_book + w · (x_btc + offset − x_book)
+                x_book = logit(mid) + adj[spread, imbalance]
+                x_btc  = logit Φ( ln(E[A]/K) / σ·√τ_eff )
+                A  = Chainlink 60 s settlement average, its known
+                     part already in E[A]
+                τ_eff = τ − 40 s,  or τ³ / (3·60²) inside the last
+                     minute (variance left in the average)
+                σ  = EWMA of de-seasonalised 1-min BTC returns
+                offset = EWMA anchor of x_book − x_btc;
+                w fitted walk-forward, never on the test day
+    ▼
+  markouts      every public trade as a maker fill, YES-equivalent;
+                s·(m(t+τ) − P) for τ = 0.1 s … resolution, with m
+                read just before the taker's first consumed level
+    ▼
+  queue model   virtual orders join the back of each level; shares
+                ahead drain on trades and cancels under 4 cancel
+                models → P(fill | position), toxicity by position
+    ▼
+  simulator     quotes at fair ± h, jump guard, reduce-only at expiry;
+                75 ms order path (lognormal + bursts), post-only
+                rejects, cancels in flight, fee 7%·p(1−p), 20% rebate;
+                walk-forward settings, lockbox day, deflated Sharpe
 ```
 
 | Layer | Implementation |
 |---|---|
 | Recorder | Stores raw frames first, with our receive stamp in ns. No historical book API exists, so this is the only source. One WS per market family isolates slow-consumer disconnects. An idle watchdog reconnects silent sockets. |
 | Gap detection | The Polymarket WS has no sequence numbers. The book hash is compared with REST every 60 s and re-checked after 2 s before a reset. External venues use their sequence chains (Binance `pu`/`U`, Bybit `u`, OKX `seqId`). |
-| Replay | Rebuilds the L2 book event by event. 6,201,126 of 6,201,126 rebuilt books match REST snapshots. |
-| Fair value | Log-odds blend of a Stoikov-adjusted book price and a BTC digital-option model anchored to the book. Weights are fitted walk-forward. Recomputed on every touch change and Binance tick. |
-| Markouts | Public trades become maker fills (YES-equivalent). Each is marked against the book just before the taker's first consumed level, from 0.1 s to resolution. |
-| Queue model | Virtual orders in the replayed book track shares ahead per update, under four cancel models. Output: fill probability and toxicity by queue position. |
-| Simulator | Compiled event engine on the queue model, one decision per receive timestamp. Covers order-path latency, post-only rejects, cancels in flight, fees and rebates, plus oracle switches for valuing each lever. |
-| Validation | Walk-forward parameter choice, a lockbox day, a plateau check on neighbouring settings, deflated Sharpe across all trials. |
 | Compute | `ops/burst.sh` creates a 16-vCPU / 64 GB server, fetches from the bucket, runs, pulls results and deletes it. A TTL guards against forgotten servers. Cost: €0.38/h. |
 
 Measured latency: Polymarket feed to VPS p50 11 ms, Binance feed p50 127 ms, VPS to CLOB order round trip p50 46–52 ms.
