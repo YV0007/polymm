@@ -413,7 +413,8 @@ VPS (Hetzner, fsn1)                                   Hetzner Object Storage  po
   layers keep the 7-day VPS retention until the nightly pull is replaced by the bucket.
 - **Analysis**: `pl.scan_parquet("s3://polymm-data-7k3q/feeds/tables/<table>/dt=2026-11-20/**")`
   or fetch the days to the laptop first; the same paths on both sides. Jobs beyond the laptop
-  (8 GB) go to an hourly burst server (CCX43 64 GB, €0.38/h) after an explicit estimate.
+  (8 GB: anything across days, or on the full book) go to a burst server rented by the hour
+  (`ops/burst.sh`, D-043: CCX43 64 GB, €0.38/h, created in ~70 s, deletes itself after 8 h).
 - **Deploy**: `ops/deploy.sh polymm [restart|sync]` ships `git archive HEAD` (never the working
   tree); `ops/install_feeds_units.sh` installs the service and timers. Secrets live only in
   `~/.config/polymm/{s3,polybolt}.env` on the VPS and `s3.env` on the laptop (mode 600, copied over ssh, so the laptop can upload its history and fetch tables); the PolyBolt key
