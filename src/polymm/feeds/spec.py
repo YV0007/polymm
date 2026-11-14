@@ -63,6 +63,12 @@ class FeedSpec:
     keep_prefix_field: str | None = None  # see `keep`
     polls: list[RestPoll] = field(default_factory=list)
     max_size: int = 16 * 2**20
+    # Why an idle limit: a socket can stay open and answer pings while the server has silently
+    # dropped our subscription. RTDS did exactly that on the first night (2026-11-13/14): each
+    # connection streamed 2–77 min, then nothing for 60–90 min until the server closed it;
+    # 482 of the first 720 minutes were lost. Every feed here sends at least ~1 frame/s when
+    # healthy, so "no frame for idle_s" means reconnect, not "quiet market".
+    idle_s: float = 60.0
 
     def keep(self, raw: str) -> bool:
         if raw in self.drop:
@@ -182,5 +188,6 @@ FEEDS: dict[str, FeedSpec] = {
             {"topic": "activity", "type": "trades"}]})],
         ping=("PING", 5), drop=("PONG", ""),
         keep_prefix_field="eventSlug",
+        idle_s=20.0,  # Chainlink arrives every second; 20 s of silence is a dead subscription
     ),
 }

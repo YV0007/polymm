@@ -398,7 +398,9 @@ VPS (Hetzner, fsn1)                                   Hetzner Object Storage  po
 ```
 
 - **Raw first.** The recorder only stamps (`ts_recv_ns`) and stores frames; nothing is interpreted
-  live. A parser bug costs a re-parse, not data. Same line format as the main recorder.
+  live. A parser bug costs a re-parse, not data. Same line format as the main recorder. A feed
+  that sends no frame for `idle_s` (60 s; RTDS 20 s) is reconnected: RTDS kept sockets open
+  but silent for 60–90 min at a time on the first night.
 - **Daily parse** runs hour by hour (biggest hour ~200 MB in memory, flat), writes
   `parser_version` into every file's metadata and re-parses a day when the version changes
   (`--force` for everything). `checks.md` per day: lines, rows, parse errors, reconnects, sequence

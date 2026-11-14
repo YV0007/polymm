@@ -47,6 +47,7 @@ class WsFeed:
         self._conn_ids = conn_ids
         self.conn_id = 0
         self.reconnects = 0
+        self.idle_reconnects = 0
         self.msgs = 0
         self.bytes = 0
         self.connected_at: float | None = None
@@ -75,7 +76,15 @@ class WsFeed:
                     backoff = 1.0
                     pinger = asyncio.create_task(self._pinger(ws)) if spec.ping else None
                     try:
-                        async for raw in ws:
+                        while True:
+                            try:
+                                raw = await asyncio.wait_for(ws.recv(), timeout=spec.idle_s)
+                            except asyncio.TimeoutError:
+                                # Why break and not continue: leaving the `async with` closes the
+                                # socket; the loop below records the reconnect and opens a new one
+                                log.warning("idle [%s] conn_id=%d: no frame for %.0f s, reconnecting", spec.name, self.conn_id, spec.idle_s)
+                                self.idle_reconnects += 1
+                                break
                             ts = time.time_ns()  # first: the stamp is the measurement
                             if isinstance(raw, bytes):
                                 raw = raw.decode()

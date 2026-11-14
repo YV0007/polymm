@@ -248,3 +248,43 @@ def test_calendar_dst_and_rules():
     assert all(t.weekday() == 3 and t.hour == 13 for t in thu)
     exp = cal.filter(cal["event"] == "deribit_expiry")
     assert exp.height == 61 and exp.filter(exp["importance"] == "high").height == 8  # Fridays
+
+
+def test_idle_watchdog_reconnects_a_silent_socket():
+    """A server that sends one frame and then nothing must be reconnected after idle_s
+    (the RTDS zombie-subscription pattern of 2026-11-13/14), with a RECONNECT marker queued."""
+    import asyncio
+    from websockets.asyncio.server import serve
+
+    from polymm.feeds.recorder import RECONNECT, WsFeed
+    from polymm.feeds.spec import FeedSpec
+
+    async def main():
+        connects = 0
+
+        async def handler(ws):
+            nonlocal connects
+            connects += 1
+            await ws.send('{"hello":%d}' % connects)
+            await asyncio.sleep(10)  # silent, socket stays open
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            spec = FeedSpec(name="t", url=f"ws://127.0.0.1:{port}", idle_s=0.3)
+            q: asyncio.Queue = asyncio.Queue()
+            feed = WsFeed(spec, q, iter(range(1, 100)))
+            task = asyncio.create_task(feed.run())
+            await asyncio.sleep(2.0)
+            feed.stop()
+            task.cancel()
+            items = []
+            while not q.empty():
+                items.append(q.get_nowait())
+            return connects, feed.idle_reconnects, items
+
+    connects, idle, items = asyncio.run(main())
+    assert connects >= 2 and idle >= 1
+    frames = [i for i in items if i[3] != RECONNECT]
+    markers = [i for i in items if i[3] == RECONNECT]
+    assert len(frames) == connects and len(markers) >= 1
+    assert frames[0][2] == 1 and frames[1][2] == 2  # conn_id advances on each reconnect
