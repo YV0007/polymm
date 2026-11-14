@@ -1,13 +1,5 @@
 # polymm
 
-Market making on Polymarket's central limit order book. The repo has four parts:
-- a 24/7 multi-venue recorder;
-- an event-by-event order-book replay;
-- a walk-forward fair value;
-- a latency-aware simulator that decomposes every fill's P&L.
-
-The current market is BTC 15-minute Up/Down: a binary payoff on BTC, priced first on external venues and quoted on a 1-tick book.
-
 ## Results
 
 Strategy: an event-driven two-sided quoter at ±2–3 ¢ around the fair value, 10 shares a side. It re-prices on every book event and Binance tick. A jump guard pulls the threatened side for 1–3 s after a fast fair-value move, and quoting is reduce-only in the last 60 s.
