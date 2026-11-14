@@ -43,14 +43,37 @@ About 36 shares and 4 fills per window. Peak capital is about 130 USD.
 
 ## Architecture
 
-```math
-\begin{aligned}
-&\textbf{Recording}\ \text{(VPS, 24/7)} && \text{Polymarket CLOB: WS + REST} \\
-& && \text{Binance} \cdot \text{Coinbase} \cdot \text{OKX} \cdot \text{Bybit} \cdot \text{Hyperliquid} \cdot \text{Deribit} \cdot \text{Chainlink} \\[4pt]
-&\textbf{Storage} && \longrightarrow\ \text{object storage: raw zstd + Parquet, hourly upload} \\[4pt]
-&\textbf{Research} && \longrightarrow\ \text{replay} \to \text{quality} \to \text{fair value} \\
-& && \longrightarrow\ \text{markouts} \to \text{queue model} \to \text{simulator}
-\end{aligned}
+```text
+  RECORDING  ·  VPS, 24/7
+
+  ┌──────────────────────────────┐      ┌──────────────────────────────┐
+  │  polymm record               │      │  polymm-feeds record         │
+  │                              │      │                              │
+  │  Polymarket CLOB  WS + REST  │      │  Binance · Coinbase · OKX    │
+  │  gap checks against REST     │      │  Bybit · Hyperliquid         │
+  │  Binance spot                │      │  Deribit · Chainlink         │
+  └───────────────┬──────────────┘      └───────────────┬──────────────┘
+                  │                                     │
+                  └──────────────────┬──────────────────┘
+                                     ▼
+                    ┌────────────────────────────────┐
+  STORAGE           │  object storage                │
+                    │  raw zstd + Parquet, hourly    │
+                    └────────────────┬───────────────┘
+                                     ▼
+  RESEARCH  ·  burst servers by the hour
+
+      replay          L2 book rebuilt event by event
+        ▼
+      quality         clean windows, gap flags
+        ▼
+      fair value      log-odds, walk-forward
+        ▼
+      markouts        adverse selection by horizon
+        ▼
+      queue model     fill probability, toxicity by queue position
+        ▼
+      simulator       latency, fees, P&L decomposition
 ```
 
 | Layer | Implementation |
