@@ -17,3 +17,7 @@ build/
 .vscode/
 data_vps/
 reports/
+
+# kept local only, not published to GitHub
+README.md
+CLAUDE.md
